@@ -1,0 +1,33 @@
+@import "tailwindcss";
+
+/* Fix for iOS WebKit / Mobile Safari date inputs overflowing container */
+input[type="date"],
+input[type="datetime-local"],
+input[type="time"] {
+  box-sizing: border-box !important;
+  max-width: 100% !important;
+  width: 100% !important;
+  -webkit-appearance: none;
+  appearance: none;
+  display: block;
+}
+
+input[type="date"]::-webkit-date-and-time-value {
+  text-align: left;
+}
+
+/* Custom sleek scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 9999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #94a3b8;
+}
