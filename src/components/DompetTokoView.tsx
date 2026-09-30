@@ -1106,15 +1106,10 @@ export const DompetTokoView: React.FC<DompetTokoViewProps> = ({
 
       {/* RIWAYAT TRANSAKSI Card (Scrollable container agar halaman tidak panjang) */}
       <div className="bg-white rounded-2xl border border-slate-200/90 p-4 shadow-xs space-y-2.5">
-        <div className="pb-2 border-b border-slate-100 flex items-center justify-between">
+        <div className="pb-2 border-b border-slate-100">
           <h2 className="text-[11px] font-bold text-slate-700 uppercase tracking-wider">
             RIWAYAT TRANSAKSI ({transactions.length})
           </h2>
-          {isAdmin && (
-            <span className="text-[10px] font-bold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-200">
-              Admin: Edit & Hapus Aktif
-            </span>
-          )}
         </div>
 
         {/* Scrollable Transaction History Items */}
