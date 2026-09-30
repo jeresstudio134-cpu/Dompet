@@ -16,7 +16,8 @@ import {
   ArrowLeft,
   Landmark,
   Banknote,
-  Smartphone
+  Smartphone,
+  Store
 } from 'lucide-react';
 import { Account, Transaction } from '../types/finance.ts';
 import { parseRupiahInput, formatRupiah } from '../utils/formatters.ts';
@@ -53,6 +54,8 @@ interface AdminPinModalProps {
   onAddAccount: (acc: { name: string; type: 'cash' | 'bank' | 'ewallet'; initialBalance?: number }) => void;
   onEditAccount: (id: string, updated: { name: string; type: 'cash' | 'bank' | 'ewallet'; initialBalance?: number }) => void;
   onDeleteAccount: (id: string) => void;
+  storeName?: string;
+  onUpdateStoreName?: (name: string) => void;
 }
 
 export const AdminPinModal: React.FC<AdminPinModalProps> = ({
@@ -66,15 +69,20 @@ export const AdminPinModal: React.FC<AdminPinModalProps> = ({
   onAddAccount,
   onEditAccount,
   onDeleteAccount,
+  storeName,
+  onUpdateStoreName,
 }) => {
   const [pinInput, setPinInput] = useState('');
   const [showPin, setShowPin] = useState(false);
   const [errorMessage, setErrorMessage] = useState('');
   const [successMessage, setSuccessMessage] = useState('');
 
-  // Mode: 'login' | 'menu' | 'change_pin' | 'manage_accounts'
-  const [activeView, setActiveView] = useState<'login' | 'menu' | 'change_pin' | 'manage_accounts'>('menu');
+  // Mode: 'login' | 'menu' | 'change_pin' | 'manage_accounts' | 'change_store_name'
+  const [activeView, setActiveView] = useState<'login' | 'menu' | 'change_pin' | 'manage_accounts' | 'change_store_name'>('menu');
   
+  // State for changing store name
+  const [storeNameInput, setStoreNameInput] = useState(storeName || 'Dompet Toko');
+
   // State for changing PIN
   const [currentPinInput, setCurrentPinInput] = useState('');
   const [newPinInput, setNewPinInput] = useState('');
@@ -600,6 +608,98 @@ export const AdminPinModal: React.FC<AdminPinModalProps> = ({
                     </button>
                   </div>
                 </form>
+              ) : activeView === 'change_store_name' ? (
+                /* VIEW: CHANGE STORE NAME */
+                <form 
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    if (!storeNameInput.trim()) {
+                      setErrorMessage('Nama toko tidak boleh kosong.');
+                      return;
+                    }
+                    if (onUpdateStoreName) {
+                      onUpdateStoreName(storeNameInput.trim());
+                    }
+                    setSuccessMessage('Nama toko berhasil diperbarui!');
+                    setTimeout(() => {
+                      setActiveView('menu');
+                      setSuccessMessage('');
+                    }, 1000);
+                  }} 
+                  className="space-y-3 pt-1"
+                >
+                  <div className="flex items-center justify-between pb-1 border-b border-slate-100">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setActiveView('menu');
+                        setErrorMessage('');
+                        setSuccessMessage('');
+                      }}
+                      className="text-xs font-bold text-[#1e3a5f] hover:underline flex items-center gap-1 cursor-pointer"
+                    >
+                      <ArrowLeft className="w-3.5 h-3.5" />
+                      <span>Kembali ke Menu Admin</span>
+                    </button>
+                  </div>
+
+                  <div className="text-xs font-bold text-slate-800 flex items-center gap-1.5">
+                    <Store className="w-3.5 h-3.5 text-blue-600" />
+                    <span>Ubah Nama Toko / Usaha</span>
+                  </div>
+
+                  <div>
+                    <label className="block text-[11px] font-medium text-slate-600 mb-1">
+                      Nama Toko Baru:
+                    </label>
+                    <input
+                      type="text"
+                      value={storeNameInput}
+                      onChange={(e) => setStoreNameInput(e.target.value)}
+                      placeholder="Contoh: Toko Berkah, Toko Makmur, dll."
+                      className="w-full bg-white text-slate-800 text-xs rounded-xl px-3 py-2 border border-slate-300 focus:outline-none focus:ring-1 focus:ring-[#1e3a5f]"
+                      autoFocus
+                      required
+                    />
+                    <p className="text-[10px] text-slate-400 mt-1">
+                      Nama ini akan ditampilkan pada judul utama dan laporan.
+                    </p>
+                  </div>
+
+                  {errorMessage && (
+                    <div className="p-2.5 rounded-xl bg-rose-50 border border-rose-200 text-rose-700 text-xs flex items-center gap-2">
+                      <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+                      <span>{errorMessage}</span>
+                    </div>
+                  )}
+
+                  {successMessage && (
+                    <div className="p-2.5 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-700 text-xs flex items-center gap-2">
+                      <Check className="w-3.5 h-3.5 shrink-0" />
+                      <span>{successMessage}</span>
+                    </div>
+                  )}
+
+                  <div className="flex items-center gap-2 pt-1">
+                    <button
+                      type="submit"
+                      className="flex-1 py-2 rounded-xl bg-[#1e3a5f] hover:bg-[#152942] text-white font-bold text-xs transition cursor-pointer"
+                    >
+                      Simpan Nama Toko
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setActiveView('menu');
+                        setErrorMessage('');
+                        setSuccessMessage('');
+                      }}
+                      className="py-2 px-3 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-600 font-semibold text-xs transition cursor-pointer"
+                    >
+                      Batal
+                    </button>
+                  </div>
+                </form>
               ) : (
                 /* VIEW 3: MAIN ADMIN MENU */
                 <div className="space-y-4">
@@ -637,7 +737,32 @@ export const AdminPinModal: React.FC<AdminPinModalProps> = ({
                       </span>
                     </button>
 
-                    {/* 2. Ubah PIN */}
+                    {/* 2. Ubah Nama Toko */}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setActiveView('change_store_name');
+                        setStoreNameInput(storeName || 'Dompet Toko');
+                        setErrorMessage('');
+                        setSuccessMessage('');
+                      }}
+                      className="w-full p-3 rounded-2xl bg-white hover:bg-slate-50 text-slate-800 font-semibold text-xs flex items-center justify-between border border-slate-200 shadow-2xs hover:border-[#1e3a5f]/40 transition group cursor-pointer"
+                    >
+                      <div className="flex items-center gap-2.5">
+                        <div className="w-8 h-8 rounded-xl bg-blue-50 text-blue-700 flex items-center justify-center group-hover:scale-105 transition">
+                          <Store className="w-4 h-4" />
+                        </div>
+                        <div className="text-left">
+                          <h4 className="font-bold text-slate-800 text-xs">Ubah Nama Toko</h4>
+                          <p className="text-[10px] text-slate-500">Ganti nama toko / nama pembukuan Anda</p>
+                        </div>
+                      </div>
+                      <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-blue-50 text-blue-700 border border-blue-200 max-w-[120px] truncate">
+                        {storeName || 'Dompet Toko'}
+                      </span>
+                    </button>
+
+                    {/* 3. Ubah PIN */}
                     <button
                       type="button"
                       onClick={() => {

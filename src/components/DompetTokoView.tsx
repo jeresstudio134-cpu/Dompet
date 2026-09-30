@@ -47,6 +47,8 @@ interface DompetTokoViewProps {
   isAdmin: boolean;
   onOpenAdminModal: () => void;
   onLogoutAdmin: () => void;
+  storeName?: string;
+  onUpdateStoreName?: (newName: string) => void;
 }
 
 export const DompetTokoView: React.FC<DompetTokoViewProps> = ({
@@ -71,7 +73,13 @@ export const DompetTokoView: React.FC<DompetTokoViewProps> = ({
   isAdmin,
   onOpenAdminModal,
   onLogoutAdmin,
+  storeName,
+  onUpdateStoreName,
 }) => {
+  const currentStoreName = storeName || 'Dompet Toko';
+  const [isEditingStoreName, setIsEditingStoreName] = useState(false);
+  const [tempStoreName, setTempStoreName] = useState(currentStoreName);
+
   // Tabs: 'catat' | 'pindah' | 'filter'
   const [activeTab, setActiveTab] = useState<'catat' | 'pindah' | 'filter'>('catat');
 
@@ -341,9 +349,62 @@ export const DompetTokoView: React.FC<DompetTokoViewProps> = ({
       {/* Title & Header Toolbar */}
       <div className="flex items-center justify-between pt-1 pb-0.5">
         <div className="flex items-center gap-2">
-          <h1 className="text-xl font-extrabold text-[#1e3a5f] tracking-tight">
-            Dompet Toko
-          </h1>
+          {isEditingStoreName ? (
+            <form 
+              onSubmit={(e) => {
+                e.preventDefault();
+                if (onUpdateStoreName) {
+                  onUpdateStoreName(tempStoreName);
+                }
+                setIsEditingStoreName(false);
+              }}
+              className="flex items-center gap-1.5"
+            >
+              <input
+                type="text"
+                value={tempStoreName}
+                onChange={(e) => setTempStoreName(e.target.value)}
+                placeholder="Nama Toko..."
+                autoFocus
+                className="text-base sm:text-lg font-extrabold text-[#1e3a5f] bg-white border border-[#1e3a5f]/40 rounded-lg px-2 py-0.5 focus:outline-none focus:ring-2 focus:ring-[#1e3a5f]"
+              />
+              <button
+                type="submit"
+                className="p-1 rounded-md bg-emerald-600 text-white hover:bg-emerald-700 transition cursor-pointer"
+                title="Simpan Nama Toko"
+              >
+                <Check className="w-3.5 h-3.5" />
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setTempStoreName(currentStoreName);
+                  setIsEditingStoreName(false);
+                }}
+                className="p-1 rounded-md bg-slate-200 text-slate-600 hover:bg-slate-300 transition cursor-pointer"
+                title="Batal"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </form>
+          ) : (
+            <div className="flex items-center gap-1.5 group">
+              <h1 className="text-xl font-extrabold text-[#1e3a5f] tracking-tight">
+                {currentStoreName}
+              </h1>
+              <button
+                type="button"
+                onClick={() => {
+                  setTempStoreName(currentStoreName);
+                  setIsEditingStoreName(true);
+                }}
+                className="p-1 rounded-lg text-slate-400 hover:text-[#1e3a5f] hover:bg-slate-100 transition cursor-pointer"
+                title="Ubah Nama Toko"
+              >
+                <Edit2 className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          )}
           
           {/* Admin / Kasir Mode Toggle Badge */}
           <button

@@ -63,6 +63,24 @@ export default function App() {
     return INITIAL_TRANSACTIONS;
   });
 
+  // Store Name state (persisted in localStorage)
+  const [storeName, setStoreName] = useState<string>(() => {
+    try {
+      const saved = localStorage.getItem('dompet_toko_store_name');
+      if (saved && saved.trim()) return saved.trim();
+    } catch {}
+    return 'Dompet Toko';
+  });
+
+  const handleUpdateStoreName = (newName: string) => {
+    const trimmed = newName.trim() || 'Dompet Toko';
+    setStoreName(trimmed);
+    try {
+      localStorage.setItem('dompet_toko_store_name', trimmed);
+    } catch {}
+    showToast(`Nama toko berhasil diubah menjadi "${trimmed}"!`, 'success');
+  };
+
   // Dynamic Categories (stored in localStorage, excluding 'Lainnya' / 'lainya')
   const isExcludedCategory = (name?: string) => {
     if (!name) return true;
@@ -510,12 +528,14 @@ export default function App() {
           isAdmin={isAdmin}
           onOpenAdminModal={() => setIsAdminModalOpen(true)}
           onLogoutAdmin={handleLogoutAdmin}
+          storeName={storeName}
+          onUpdateStoreName={handleUpdateStoreName}
         />
       </main>
 
       {/* Footer info */}
       <footer className="py-4 text-center text-[11px] text-slate-400">
-        Dompet Toko • Neon PostgreSQL & Vercel Ready
+        {storeName} • Neon PostgreSQL & Vercel Ready
       </footer>
 
       {/* MODALS */}
@@ -567,6 +587,8 @@ export default function App() {
         isAdmin={isAdmin}
         onLoginSuccess={handleLoginAdminSuccess}
         onLogoutAdmin={handleLogoutAdmin}
+        storeName={storeName}
+        onUpdateStoreName={handleUpdateStoreName}
         accounts={accounts}
         transactions={transactions}
         onAddAccount={handleAddAccount}
