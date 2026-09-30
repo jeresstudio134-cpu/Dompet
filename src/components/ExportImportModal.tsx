@@ -40,8 +40,102 @@ export const ExportImportModal: React.FC<ExportImportModalProps> = ({
 
   const HEADERS = ['No', 'Tanggal', 'Keterangan', 'Akun', 'Jenis', 'Kategori', 'Nominal', 'Catatan'];
 
-  // Helper to build native Excel-compatible HTML (.xls)
-  const buildExcelXmlHtml = (headers: string[], rows: (string | number)[][], sheetName = 'Transaksi Toko') => {
+  interface SummaryItem {
+    label: string;
+    value?: number;
+    type: 'masuk' | 'keluar' | 'sisa' | 'section' | 'acc-header' | 'acc-masuk' | 'acc-keluar';
+  }
+
+  // Helper to build native Excel-compatible HTML (.xls) with Summary on the right
+  const buildExcelXmlHtml = (
+    headers: string[], 
+    rows: (string | number)[][], 
+    summaryItems?: SummaryItem[],
+    sheetName = 'Transaksi Toko'
+  ) => {
+    const totalRowsCount = summaryItems ? Math.max(rows.length, summaryItems.length) : rows.length;
+    const tbodyRows: string[] = [];
+
+    for (let i = 0; i < totalRowsCount; i++) {
+      const r = rows[i];
+      let rowHtml = '';
+      if (r) {
+        rowHtml += `
+          <td class="center">${r[0]}</td>
+          <td class="center text">${r[1]}</td>
+          <td>${r[2]}</td>
+          <td>${r[3]}</td>
+          <td class="center">${r[4]}</td>
+          <td>${r[5]}</td>
+          <td class="num">${r[6]}</td>
+          <td>${r[7] || ''}</td>
+        `;
+      } else {
+        rowHtml += `
+          <td class="center"></td>
+          <td class="center text"></td>
+          <td></td>
+          <td></td>
+          <td class="center"></td>
+          <td></td>
+          <td class="num"></td>
+          <td></td>
+        `;
+      }
+
+      if (summaryItems) {
+        // Empty separator column (Column I)
+        rowHtml += `<td style="border:none;background:transparent;width:20px;"></td>`;
+
+        const item = summaryItems[i];
+        if (item) {
+          if (item.type === 'section') {
+            rowHtml += `
+              <td colspan="2" class="sum-section">${item.label}</td>
+            `;
+          } else if (item.type === 'masuk') {
+            rowHtml += `
+              <td class="sum-masuk">${item.label}</td>
+              <td class="num sum-masuk">${item.value ?? 0}</td>
+            `;
+          } else if (item.type === 'keluar') {
+            rowHtml += `
+              <td class="sum-keluar">${item.label}</td>
+              <td class="num sum-keluar">${item.value ?? 0}</td>
+            `;
+          } else if (item.type === 'sisa') {
+            const val = item.value ?? 0;
+            rowHtml += `
+              <td class="sum-sisa">${item.label}</td>
+              <td class="num sum-sisa" style="color:${val >= 0 ? '#047857' : '#be123c'};">${val}</td>
+            `;
+          } else if (item.type === 'acc-header') {
+            rowHtml += `
+              <td class="sum-acc-title" style="font-weight:bold;background-color:#f8fafc;color:#1e3a5f;">${item.label}</td>
+              <td class="sum-acc-title" style="background-color:#f8fafc;"></td>
+            `;
+          } else if (item.type === 'acc-masuk') {
+            rowHtml += `
+              <td class="sum-acc-sub" style="padding-left:16px;">Masuk</td>
+              <td class="num sum-acc-sub" style="color:#047857;font-weight:bold;">${item.value ?? 0}</td>
+            `;
+          } else if (item.type === 'acc-keluar') {
+            rowHtml += `
+              <td class="sum-acc-sub" style="padding-left:16px;">Keluar</td>
+              <td class="num sum-acc-sub" style="color:#be123c;font-weight:bold;">${item.value ?? 0}</td>
+            `;
+          }
+        } else {
+          rowHtml += `
+            <td style="border:none;background:transparent;"></td>
+            <td style="border:none;background:transparent;"></td>
+          `;
+        }
+      }
+
+      tbodyRows.push(`<tr>${rowHtml}</tr>`);
+    }
+
     return `<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel" xmlns="http://www.w3.org/TR/REC-html40">
 <head>
   <meta http-equiv="content-type" content="application/vnd.ms-excel; charset=UTF-8"/>
@@ -65,6 +159,13 @@ export const ExportImportModal: React.FC<ExportImportModalProps> = ({
     .center { text-align: center; }
     .num { text-align: right; mso-number-format:"\\#\\,\\#\\#0"; }
     .text { mso-number-format:"\\@"; }
+    .sum-header { background-color: #0f2744; color: #ffffff; font-weight: bold; border: 0.5pt solid #0f2744; padding: 6px 12px; }
+    .sum-section { background-color: #e2e8f0; color: #1e293b; font-weight: bold; border: 0.5pt solid #cbd5e1; padding: 5px 8px; text-align: center; font-size: 10pt; }
+    .sum-masuk { font-weight: bold; background-color: #ecfdf5; color: #047857; border: 0.5pt solid #a7f3d0; padding: 5px 10px; }
+    .sum-keluar { font-weight: bold; background-color: #fff1f2; color: #be123c; border: 0.5pt solid #fecdd3; padding: 5px 10px; }
+    .sum-sisa { font-weight: bold; background-color: #f1f5f9; color: #0f172a; border: 0.5pt solid #cbd5e1; padding: 5px 10px; }
+    .sum-acc-title { font-weight: bold; background-color: #f8fafc; color: #1e3a5f; border: 0.5pt solid #cbd5e1; padding: 5px 10px; }
+    .sum-acc-sub { color: #475569; background-color: #ffffff; border: 0.5pt solid #e2e8f0; padding: 4px 8px 4px 16px; font-size: 10pt; }
   </style>
 </head>
 <body>
@@ -72,21 +173,15 @@ export const ExportImportModal: React.FC<ExportImportModalProps> = ({
     <thead>
       <tr>
         ${headers.map(h => `<th>${h}</th>`).join('')}
+        ${summaryItems ? `
+          <th style="background-color:#ffffff;border:none;width:20px;"></th>
+          <th class="sum-header" style="text-align:left;">Ringkasan</th>
+          <th class="sum-header" style="text-align:right;">Jumlah (Rp)</th>
+        ` : ''}
       </tr>
     </thead>
     <tbody>
-      ${rows.map(r => `
-        <tr>
-          <td class="center">${r[0]}</td>
-          <td class="center text">${r[1]}</td>
-          <td>${r[2]}</td>
-          <td>${r[3]}</td>
-          <td class="center">${r[4]}</td>
-          <td>${r[5]}</td>
-          <td class="num">${r[6]}</td>
-          <td>${r[7] || ''}</td>
-        </tr>
-      `).join('')}
+      ${tbodyRows.join('')}
     </tbody>
   </table>
 </body>
@@ -95,6 +190,41 @@ export const ExportImportModal: React.FC<ExportImportModalProps> = ({
 
   // 1. Export to Excel Native Spreadsheet (.xls) - Opens directly in distinct columns
   const handleExportExcel = () => {
+    const totalMasuk = exportList.filter(t => t.type === 'masuk').reduce((sum, t) => sum + t.amount, 0);
+    const totalKeluar = exportList.filter(t => t.type === 'keluar').reduce((sum, t) => sum + t.amount, 0);
+    const sisa = totalMasuk - totalKeluar;
+
+    const accountBreakdown = accounts
+      .map(acc => {
+        const m = exportList.filter(t => t.accountId === acc.id && t.type === 'masuk').reduce((s, t) => s + t.amount, 0);
+        const k = exportList.filter(t => t.accountId === acc.id && t.type === 'keluar').reduce((s, t) => s + t.amount, 0);
+        const count = exportList.filter(t => t.accountId === acc.id).length;
+        return {
+          id: acc.id,
+          name: acc.name,
+          masuk: m,
+          keluar: k,
+          sisa: m - k,
+          count,
+        };
+      })
+      .filter(a => a.count > 0);
+
+    const summaryItems: SummaryItem[] = [
+      { label: 'Total Masuk', value: totalMasuk, type: 'masuk' },
+      { label: 'Total Keluar', value: totalKeluar, type: 'keluar' },
+      { label: 'Sisa', value: sisa, type: 'sisa' },
+    ];
+
+    if (accountBreakdown.length > 0) {
+      summaryItems.push({ label: 'TOTAL PER AKUN', type: 'section' });
+      accountBreakdown.forEach(acc => {
+        summaryItems.push({ label: acc.name, type: 'acc-header' });
+        summaryItems.push({ label: 'Masuk', value: acc.masuk, type: 'acc-masuk' });
+        summaryItems.push({ label: 'Keluar', value: acc.keluar, type: 'acc-keluar' });
+      });
+    }
+
     const rows = exportList.map((t, idx) => {
       const acc = accounts.find(a => a.id === t.accountId)?.name || t.accountId;
       return [
@@ -109,7 +239,7 @@ export const ExportImportModal: React.FC<ExportImportModalProps> = ({
       ];
     });
 
-    const excelHtml = buildExcelXmlHtml(HEADERS, rows, 'Buku Kas Toko');
+    const excelHtml = buildExcelXmlHtml(HEADERS, rows, summaryItems, 'Buku Kas Toko');
     const blob = new Blob(['\uFEFF' + excelHtml], { type: 'application/vnd.ms-excel;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
@@ -122,6 +252,41 @@ export const ExportImportModal: React.FC<ExportImportModalProps> = ({
 
   // 2. Export to CSV with Excel sep=, directive
   const handleExportCSV = () => {
+    const totalMasuk = exportList.filter(t => t.type === 'masuk').reduce((sum, t) => sum + t.amount, 0);
+    const totalKeluar = exportList.filter(t => t.type === 'keluar').reduce((sum, t) => sum + t.amount, 0);
+    const sisa = totalMasuk - totalKeluar;
+
+    const accountBreakdown = accounts
+      .map(acc => {
+        const m = exportList.filter(t => t.accountId === acc.id && t.type === 'masuk').reduce((s, t) => s + t.amount, 0);
+        const k = exportList.filter(t => t.accountId === acc.id && t.type === 'keluar').reduce((s, t) => s + t.amount, 0);
+        const count = exportList.filter(t => t.accountId === acc.id).length;
+        return {
+          id: acc.id,
+          name: acc.name,
+          masuk: m,
+          keluar: k,
+          sisa: m - k,
+          count,
+        };
+      })
+      .filter(a => a.count > 0);
+
+    const summaryItems: { label: string; value?: number }[] = [
+      { label: 'Total Masuk', value: totalMasuk },
+      { label: 'Total Keluar', value: totalKeluar },
+      { label: 'Sisa', value: sisa },
+    ];
+
+    if (accountBreakdown.length > 0) {
+      summaryItems.push({ label: '--- TOTAL PER AKUN ---' });
+      accountBreakdown.forEach(acc => {
+        summaryItems.push({ label: acc.name });
+        summaryItems.push({ label: '  Masuk', value: acc.masuk });
+        summaryItems.push({ label: '  Keluar', value: acc.keluar });
+      });
+    }
+
     const rows = exportList.map((t, idx) => {
       const acc = accounts.find(a => a.id === t.accountId)?.name || t.accountId;
       return [
@@ -133,11 +298,23 @@ export const ExportImportModal: React.FC<ExportImportModalProps> = ({
         `"${t.category || '-'}"`,
         t.amount,
         `"${(t.notes || '').replace(/"/g, '""')}"`,
-      ].join(',');
+      ];
     });
 
+    const csvHeaders = [...HEADERS, '', 'Ringkasan', 'Jumlah'];
+    const totalRowsCount = Math.max(rows.length, summaryItems.length);
+    const csvRows: string[] = [];
+
+    for (let i = 0; i < totalRowsCount; i++) {
+      const txCols = rows[i] || ['', '', '', '', '', '', '', ''];
+      const item = summaryItems[i];
+      let sumTitle = item ? item.label : '';
+      let sumVal = item && item.value !== undefined ? String(item.value) : '';
+      csvRows.push([...txCols, '', `"${sumTitle.replace(/"/g, '""')}"`, sumVal].join(','));
+    }
+
     // sep=,\r\n tells Microsoft Excel to explicitly use comma as delimiter
-    const csvContent = 'sep=,\r\n' + [HEADERS.join(','), ...rows].join('\r\n');
+    const csvContent = 'sep=,\r\n' + [csvHeaders.join(','), ...csvRows].join('\r\n');
     const blob = new Blob(['\uFEFF' + csvContent], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
@@ -172,7 +349,7 @@ export const ExportImportModal: React.FC<ExportImportModalProps> = ({
       [3, '2026-09-30', 'Pindah Saldo Kas ke Seabank', 'Cash', 'Keluar', 'Pindah Saldo', 100000, 'Contoh transfer'],
     ];
 
-    const excelHtml = buildExcelXmlHtml(HEADERS, sampleRows, 'Template Impor');
+    const excelHtml = buildExcelXmlHtml(HEADERS, sampleRows, undefined, 'Template Impor');
     const blob = new Blob(['\uFEFF' + excelHtml], { type: 'application/vnd.ms-excel;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
