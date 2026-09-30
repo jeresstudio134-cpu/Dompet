@@ -27,7 +27,10 @@ import {
   LOCAL_TX_KEY, 
   getSavedNeonConfig, 
   saveNeonConfig,
-  syncAllToNeon 
+  syncAllToNeon,
+  persistTransactionToDatabase,
+  removeTransactionFromDatabase,
+  fetchAllFromNeon
 } from './lib/neon.ts';
 
 // Components
@@ -236,6 +239,47 @@ export default function App() {
     localStorage.setItem(LOCAL_TX_KEY, JSON.stringify(transactions));
   }, [transactions]);
 
+  // Initial remote sync: load from Neon or Vercel serverless API
+  useEffect(() => {
+    let isMounted = true;
+    const fetchRemoteData = async () => {
+      // 1. Direct Neon if connection string is configured
+      if (neonConfig.connectionString && neonConfig.connectionString.trim()) {
+        try {
+          const res = await fetchAllFromNeon(neonConfig.connectionString);
+          if (isMounted && res.success && res.transactions && res.transactions.length > 0) {
+            setTransactions(res.transactions);
+            if (res.accounts && res.accounts.length > 0) {
+              setAccounts(res.accounts);
+            }
+            return;
+          }
+        } catch (e) {
+          console.warn('Neon direct fetch skipped, trying /api/transactions fallback...', e);
+        }
+      }
+
+      // 2. Vercel Serverless API fallback (reads DATABASE_URL)
+      try {
+        const resp = await fetch('/api/transactions');
+        if (resp.ok) {
+          const json = await resp.json();
+          if (isMounted && json.success && Array.isArray(json.transactions) && json.transactions.length > 0) {
+            setTransactions(json.transactions);
+            if (Array.isArray(json.accounts) && json.accounts.length > 0) {
+              setAccounts(json.accounts);
+            }
+          }
+        }
+      } catch (e) {
+        // Ignore network error in preview
+      }
+    };
+
+    fetchRemoteData();
+    return () => { isMounted = false; };
+  }, [neonConfig.connectionString]);
+
   // Month-Year dropdown options
   const monthOptions = useMemo(() => {
     return getMonthYearOptions(transactions);
@@ -243,8 +287,6 @@ export default function App() {
 
   // Statistics calculation for the active view and wallets
   const stats: MonthlyStats = useMemo(() => {
-    // 1. Overall totals matching the screenshot cards
-    // Screenshot: Masuk = Rp10.665.004, Keluar = Rp9.721.026, Sisa = Rp943.978
     let totalMasuk = 0;
     let totalKeluar = 0;
     const categoryBreakdown: Record<string, number> = {};
@@ -305,10 +347,8 @@ export default function App() {
     setTransactions(prev => [...created, ...prev]);
     showToast(`Berhasil menambahkan ${created.length} transaksi!`);
 
-    // Auto-sync to Neon if enabled
-    if (neonConfig.isConnected && neonConfig.connectionString) {
-      syncAllToNeon(neonConfig.connectionString, accounts, [...created, ...transactions]).catch(console.error);
-    }
+    // Auto-sync each transaction to database
+    created.forEach(tx => persistTransactionToDatabase(tx, neonConfig.connectionString).catch(console.error));
   };
 
   // Handler: Save single transaction
@@ -321,7 +361,15 @@ export default function App() {
       createdAt: new Date().toISOString(),
     };
     setTransactions(prev => [newTx, ...prev]);
+    persistTransactionToDatabase(newTx, neonConfig.connectionString).catch(console.error);
     showToast(`Transaksi "${newTx.description}" (${formatRupiah(newTx.amount)}) berhasil disimpan!`);
+  };
+
+  // Handler: Edit / Update existing transaction (Admin)
+  const handleEditTransaction = (updatedTx: Transaction) => {
+    setTransactions(prev => prev.map(t => t.id === updatedTx.id ? updatedTx : t));
+    persistTransactionToDatabase(updatedTx, neonConfig.connectionString).catch(console.error);
+    showToast(`Transaksi "${updatedTx.description}" berhasil diperbarui!`, 'success');
   };
 
   // Handler: Pindah Saldo / Transfer Antar Dompet
@@ -364,6 +412,8 @@ export default function App() {
     };
 
     setTransactions(prev => [txMasuk, txKeluar, ...prev]);
+    persistTransactionToDatabase(txMasuk, neonConfig.connectionString).catch(console.error);
+    persistTransactionToDatabase(txKeluar, neonConfig.connectionString).catch(console.error);
     showToast(`Pindah saldo ${formatRupiah(amount)} dari ${fromName} ke ${toName} berhasil!`);
   };
 
@@ -372,7 +422,6 @@ export default function App() {
     if (transactions.length === 0) return;
     const lastTx = transactions[0];
 
-    // If it was a transfer pair (e.g., created simultaneously)
     let idsToRemove = [lastTx.id];
     if (lastTx.description.startsWith('Pindah') && transactions.length > 1) {
       const secondTx = transactions[1];
@@ -382,6 +431,7 @@ export default function App() {
     }
 
     setTransactions(prev => prev.filter(t => !idsToRemove.includes(t.id)));
+    idsToRemove.forEach(id => removeTransactionFromDatabase(id, neonConfig.connectionString).catch(console.error));
     showToast(`Transaksi terakhir "${lastTx.description}" (${formatRupiah(lastTx.amount)}) dibatalkan.`, 'info');
   };
 
@@ -390,6 +440,7 @@ export default function App() {
     const target = transactions.find(t => t.id === id);
     if (confirm(`Hapus transaksi "${target?.description || ''}"?`)) {
       setTransactions(prev => prev.filter(t => t.id !== id));
+      removeTransactionFromDatabase(id, neonConfig.connectionString).catch(console.error);
       showToast('Transaksi telah dihapus.', 'info');
     }
   };
@@ -423,6 +474,7 @@ export default function App() {
           onTransfer={handleTransfer}
           onUndoLast={handleUndoLast}
           onDeleteTransaction={handleDeleteTransaction}
+          onEditTransaction={handleEditTransaction}
           onOpenAutoRecord={() => setIsAutoRecordOpen(true)}
           onOpenNeonModal={handleOpenNeonModal}
           onOpenExportImport={handleOpenExportImport}

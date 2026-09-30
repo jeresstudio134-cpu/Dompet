@@ -252,3 +252,85 @@ export const fetchAllFromNeon = async (
     };
   }
 };
+
+// Persist single transaction (insert or update) to Neon directly or via Vercel /api/transactions
+export const persistTransactionToDatabase = async (
+  tx: Transaction,
+  connectionString?: string
+): Promise<void> => {
+  // 1. Direct Neon driver
+  if (connectionString && connectionString.trim()) {
+    try {
+      const sql = neon(connectionString.trim());
+      await sql`
+        INSERT INTO transactions (
+          id, no, date, description, account_id, type, category, amount, notes, transfer_target_account_id, linked_transaction_id, created_at
+        ) VALUES (
+          ${tx.id},
+          ${tx.no ?? null},
+          ${tx.date},
+          ${tx.description},
+          ${tx.accountId},
+          ${tx.type},
+          ${tx.category},
+          ${tx.amount},
+          ${tx.notes ?? null},
+          ${tx.transferTargetAccountId ?? null},
+          ${tx.linkedTransactionId ?? null},
+          ${tx.createdAt ? new Date(tx.createdAt).toISOString() : new Date().toISOString()}
+        )
+        ON CONFLICT (id) DO UPDATE SET
+          no = EXCLUDED.no,
+          date = EXCLUDED.date,
+          description = EXCLUDED.description,
+          account_id = EXCLUDED.account_id,
+          type = EXCLUDED.type,
+          category = EXCLUDED.category,
+          amount = EXCLUDED.amount,
+          notes = EXCLUDED.notes,
+          transfer_target_account_id = EXCLUDED.transfer_target_account_id,
+          linked_transaction_id = EXCLUDED.linked_transaction_id;
+      `;
+      return;
+    } catch (err) {
+      console.warn('Direct Neon persist error, falling back to /api/transactions...', err);
+    }
+  }
+
+  // 2. Vercel API fallback
+  try {
+    await fetch('/api/transactions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(tx),
+    });
+  } catch (err) {
+    console.warn('API persist error:', err);
+  }
+};
+
+// Remove single transaction from Neon directly or via Vercel /api/transactions
+export const removeTransactionFromDatabase = async (
+  id: string,
+  connectionString?: string
+): Promise<void> => {
+  // 1. Direct Neon driver
+  if (connectionString && connectionString.trim()) {
+    try {
+      const sql = neon(connectionString.trim());
+      await sql`DELETE FROM transactions WHERE id = ${id};`;
+      return;
+    } catch (err) {
+      console.warn('Direct Neon delete error, falling back to /api/transactions...', err);
+    }
+  }
+
+  // 2. Vercel API fallback
+  try {
+    await fetch(`/api/transactions?id=${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+    });
+  } catch (err) {
+    console.warn('API delete error:', err);
+  }
+};

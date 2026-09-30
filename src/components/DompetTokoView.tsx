@@ -17,7 +17,9 @@ import {
   CheckCircle2,
   Lock,
   Unlock,
-  ShieldCheck
+  ShieldCheck,
+  Edit2,
+  X
 } from 'lucide-react';
 import confetti from 'canvas-confetti';
 import { Transaction, Account, TransactionType, FilterState, MonthlyStats, NeonConfig } from '../types/finance.ts';
@@ -32,6 +34,7 @@ interface DompetTokoViewProps {
   onTransfer: (fromAcc: string, toAcc: string, amount: number, date: string, notes: string) => void;
   onUndoLast: () => void;
   onDeleteTransaction: (id: string) => void;
+  onEditTransaction: (tx: Transaction) => void;
   onOpenAutoRecord: () => void;
   onOpenNeonModal: () => void;
   onOpenExportImport: () => void;
@@ -55,6 +58,7 @@ export const DompetTokoView: React.FC<DompetTokoViewProps> = ({
   onTransfer,
   onUndoLast,
   onDeleteTransaction,
+  onEditTransaction,
   onOpenAutoRecord,
   onOpenNeonModal,
   onOpenExportImport,
@@ -70,6 +74,52 @@ export const DompetTokoView: React.FC<DompetTokoViewProps> = ({
 }) => {
   // Tabs: 'catat' | 'pindah' | 'filter'
   const [activeTab, setActiveTab] = useState<'catat' | 'pindah' | 'filter'>('catat');
+
+  // Editing state for Admin
+  const [editingTx, setEditingTx] = useState<Transaction | null>(null);
+  const [editDate, setEditDate] = useState('');
+  const [editKeterangan, setEditKeterangan] = useState('');
+  const [editAkun, setEditAkun] = useState('cash');
+  const [editJenis, setEditJenis] = useState<'masuk' | 'keluar'>('keluar');
+  const [editNominalStr, setEditNominalStr] = useState('0');
+  const [editKategori, setEditKategori] = useState('');
+  const [editCatatan, setEditCatatan] = useState('');
+
+  const handleStartEdit = (tx: Transaction) => {
+    setEditingTx(tx);
+    setEditDate(tx.date);
+    setEditKeterangan(tx.description);
+    setEditAkun(tx.accountId);
+    setEditJenis(tx.type);
+    setEditNominalStr(tx.amount.toLocaleString('id-ID'));
+    setEditKategori(tx.category || '');
+    setEditCatatan(tx.notes || '');
+  };
+
+  const handleSaveEdit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingTx) return;
+
+    const parsedAmount = parseRupiahInput(editNominalStr);
+    if (parsedAmount <= 0) {
+      alert('Nominal harus lebih dari 0.');
+      return;
+    }
+
+    const updated: Transaction = {
+      ...editingTx,
+      date: editDate,
+      description: editKeterangan.trim(),
+      accountId: editAkun,
+      type: editJenis,
+      amount: parsedAmount,
+      category: editKategori,
+      notes: editCatatan.trim() || undefined,
+    };
+
+    onEditTransaction(updated);
+    setEditingTx(null);
+  };
 
   // Form states for 'Catat'
   const [tanggal, setTanggal] = useState(getCurrentDateIndo());
@@ -999,9 +1049,18 @@ export const DompetTokoView: React.FC<DompetTokoViewProps> = ({
                     {isAdmin && (
                       <div className="flex items-center gap-1 shrink-0 pt-0.5">
                         <button
+                          type="button"
+                          onClick={() => handleStartEdit(t)}
+                          className="p-1 text-slate-400 hover:text-[#1e3a5f] hover:bg-slate-100 rounded-md transition cursor-pointer"
+                          title="Edit Transaksi (Admin)"
+                        >
+                          <Edit2 className="w-3.5 h-3.5" />
+                        </button>
+                        <button
+                          type="button"
                           onClick={() => onDeleteTransaction(t.id)}
-                          className="p-1 text-slate-400 hover:text-rose-600 transition"
-                          title="Hapus"
+                          className="p-1 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-md transition cursor-pointer"
+                          title="Hapus Transaksi (Admin)"
                         >
                           <Trash2 className="w-3.5 h-3.5" />
                         </button>
@@ -1047,10 +1106,15 @@ export const DompetTokoView: React.FC<DompetTokoViewProps> = ({
 
       {/* RIWAYAT TRANSAKSI Card (Scrollable container agar halaman tidak panjang) */}
       <div className="bg-white rounded-2xl border border-slate-200/90 p-4 shadow-xs space-y-2.5">
-        <div className="pb-2 border-b border-slate-100">
+        <div className="pb-2 border-b border-slate-100 flex items-center justify-between">
           <h2 className="text-[11px] font-bold text-slate-700 uppercase tracking-wider">
             RIWAYAT TRANSAKSI ({transactions.length})
           </h2>
+          {isAdmin && (
+            <span className="text-[10px] font-bold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-200">
+              Admin: Edit & Hapus Aktif
+            </span>
+          )}
         </div>
 
         {/* Scrollable Transaction History Items */}
@@ -1097,15 +1161,26 @@ export const DompetTokoView: React.FC<DompetTokoViewProps> = ({
                   </div>
                 </div>
 
-                {/* Delete Button - Hanya Muncul di Mode Admin */}
+                {/* Edit & Delete Buttons - Hanya Muncul di Mode Admin */}
                 {isAdmin && (
-                  <button
-                    onClick={() => onDeleteTransaction(tx.id)}
-                    title="Hapus transaksi ini"
-                    className="p-1 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-md transition shrink-0 pt-0.5"
-                  >
-                    <Trash2 className="w-3.5 h-3.5" />
-                  </button>
+                  <div className="flex items-center gap-1 shrink-0 pt-0.5">
+                    <button
+                      type="button"
+                      onClick={() => handleStartEdit(tx)}
+                      title="Edit transaksi ini (Admin)"
+                      className="p-1 text-slate-400 hover:text-[#1e3a5f] hover:bg-slate-100 rounded-md transition cursor-pointer"
+                    >
+                      <Edit2 className="w-3.5 h-3.5" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => onDeleteTransaction(tx.id)}
+                      title="Hapus transaksi ini (Admin)"
+                      className="p-1 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-md transition cursor-pointer"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
                 )}
               </div>
             );
@@ -1113,6 +1188,187 @@ export const DompetTokoView: React.FC<DompetTokoViewProps> = ({
         </div>
 
       </div>
+
+      {/* MODAL EDIT TRANSAKSI (ADMIN) */}
+      {editingTx && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-slate-950/80 backdrop-blur-xs animate-in fade-in">
+          <div className="bg-white rounded-3xl w-full max-w-md overflow-hidden shadow-2xl border border-slate-200">
+            {/* Header */}
+            <div className="px-5 py-4 border-b border-slate-100 flex items-center justify-between bg-slate-50/80">
+              <div className="flex items-center gap-2">
+                <div className="w-8 h-8 rounded-xl bg-[#1e3a5f]/10 text-[#1e3a5f] flex items-center justify-center shrink-0">
+                  <Edit2 className="w-4 h-4" />
+                </div>
+                <div>
+                  <h3 className="font-extrabold text-slate-800 text-sm">
+                    Edit Transaksi (Admin)
+                  </h3>
+                  <p className="text-[10px] text-slate-500">
+                    Ubah detail transaksi yang tersimpan
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setEditingTx(null)}
+                className="p-1 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-200 transition cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {/* Form */}
+            <form onSubmit={handleSaveEdit} className="p-5 space-y-3.5 max-h-[80vh] overflow-y-auto">
+              {/* Tanggal */}
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">
+                  Tanggal
+                </label>
+                <input
+                  type="date"
+                  required
+                  value={editDate}
+                  onChange={(e) => setEditDate(e.target.value)}
+                  className="w-full bg-white text-slate-800 text-xs sm:text-sm rounded-xl px-3 py-2 border border-slate-300 focus:outline-none focus:ring-1 focus:ring-[#1e3a5f]"
+                />
+              </div>
+
+              {/* Jenis: Masuk / Keluar */}
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">
+                  Jenis Transaksi
+                </label>
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setEditJenis('masuk')}
+                    className={`py-2 rounded-xl text-xs font-bold border transition cursor-pointer ${
+                      editJenis === 'masuk'
+                        ? 'bg-emerald-600 text-white border-emerald-600'
+                        : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-50'
+                    }`}
+                  >
+                    Masuk
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setEditJenis('keluar')}
+                    className={`py-2 rounded-xl text-xs font-bold border transition cursor-pointer ${
+                      editJenis === 'keluar'
+                        ? 'bg-[#a32828] text-white border-[#a32828]'
+                        : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-50'
+                    }`}
+                  >
+                    Keluar
+                  </button>
+                </div>
+              </div>
+
+              {/* Akun */}
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">
+                  Akun / Dompet
+                </label>
+                <div className="grid grid-cols-2 gap-1.5">
+                  {accounts.map(a => (
+                    <button
+                      key={a.id}
+                      type="button"
+                      onClick={() => setEditAkun(a.id)}
+                      className={`py-1.5 px-2 rounded-xl text-xs font-bold border transition cursor-pointer ${
+                        editAkun === a.id
+                          ? 'bg-[#1e3a5f] text-white border-[#1e3a5f]'
+                          : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-50'
+                      }`}
+                    >
+                      {a.name}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Keterangan */}
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">
+                  Keterangan
+                </label>
+                <input
+                  type="text"
+                  required
+                  value={editKeterangan}
+                  onChange={(e) => setEditKeterangan(e.target.value)}
+                  className="w-full bg-white text-slate-800 text-xs sm:text-sm rounded-xl px-3 py-2 border border-slate-300 focus:outline-none focus:ring-1 focus:ring-[#1e3a5f]"
+                />
+              </div>
+
+              {/* Nominal */}
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">
+                  Nominal (Rp)
+                </label>
+                <input
+                  type="text"
+                  required
+                  value={editNominalStr}
+                  onChange={(e) => {
+                    const parsed = parseRupiahInput(e.target.value);
+                    setEditNominalStr(parsed === 0 ? '' : parsed.toLocaleString('id-ID'));
+                  }}
+                  className="w-full bg-white text-slate-800 text-xs sm:text-sm rounded-xl px-3 py-2 border border-slate-300 focus:outline-none focus:ring-1 focus:ring-[#1e3a5f] font-mono font-bold"
+                />
+              </div>
+
+              {/* Kategori */}
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">
+                  Kategori
+                </label>
+                <select
+                  value={editKategori}
+                  onChange={(e) => setEditKategori(e.target.value)}
+                  className="w-full bg-white text-slate-800 text-xs sm:text-sm rounded-xl px-3 py-2 border border-slate-300 focus:outline-none focus:ring-1 focus:ring-[#1e3a5f]"
+                >
+                  <option value="">— tanpa kategori —</option>
+                  {allCategories.map(cat => (
+                    <option key={cat} value={cat}>{cat}</option>
+                  ))}
+                </select>
+              </div>
+
+              {/* Catatan (opsional) */}
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">
+                  Catatan (opsional)
+                </label>
+                <input
+                  type="text"
+                  value={editCatatan}
+                  onChange={(e) => setEditCatatan(e.target.value)}
+                  placeholder="Catatan tambahan..."
+                  className="w-full bg-white text-slate-800 text-xs rounded-xl px-3 py-2 border border-slate-300 focus:outline-none focus:ring-1 focus:ring-[#1e3a5f]"
+                />
+              </div>
+
+              {/* Action Buttons */}
+              <div className="flex items-center gap-2 pt-2">
+                <button
+                  type="submit"
+                  className="flex-1 py-2.5 rounded-xl bg-[#1b7a4b] hover:bg-[#156a40] text-white font-bold text-xs transition shadow-xs cursor-pointer"
+                >
+                  Simpan Perubahan
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setEditingTx(null)}
+                  className="py-2.5 px-4 rounded-xl bg-slate-200 hover:bg-slate-300 text-slate-700 font-bold text-xs transition cursor-pointer"
+                >
+                  Batal
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
 
     </div>
   );
