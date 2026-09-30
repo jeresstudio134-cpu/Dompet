@@ -120,7 +120,7 @@ export default function App() {
   });
 
   // Handler: Add Account (Admin)
-  const handleAddAccount = (newAcc: { name: string; type: 'cash' | 'bank' | 'ewallet' }) => {
+  const handleAddAccount = (newAcc: { name: string; type: 'cash' | 'bank' | 'ewallet'; initialBalance?: number }) => {
     const slug = newAcc.name.toLowerCase().trim().replace(/[^a-z0-9]/g, '_');
     const id = `${slug || 'acc'}_${Date.now().toString(36).slice(-4)}`;
     const colorMap = {
@@ -139,15 +139,20 @@ export default function App() {
       type: newAcc.type,
       color: colorMap[newAcc.type] || 'slate',
       iconName: iconMap[newAcc.type] || 'Wallet',
-      initialBalance: 0,
+      initialBalance: newAcc.initialBalance || 0,
     };
     setAccounts(prev => [...prev, created]);
     showToast(`Akun "${created.name}" berhasil ditambahkan!`, 'success');
   };
 
   // Handler: Edit Account (Admin)
-  const handleEditAccount = (id: string, updated: { name: string; type: 'cash' | 'bank' | 'ewallet' }) => {
-    setAccounts(prev => prev.map(a => a.id === id ? { ...a, name: updated.name.trim(), type: updated.type } : a));
+  const handleEditAccount = (id: string, updated: { name: string; type: 'cash' | 'bank' | 'ewallet'; initialBalance?: number }) => {
+    setAccounts(prev => prev.map(a => a.id === id ? { 
+      ...a, 
+      name: updated.name.trim(), 
+      type: updated.type,
+      initialBalance: updated.initialBalance !== undefined ? updated.initialBalance : a.initialBalance
+    } : a));
     showToast(`Akun "${updated.name}" berhasil diperbarui!`, 'success');
   };
 
@@ -259,35 +264,21 @@ export default function App() {
     const sisaSaldo = totalMasuk - totalKeluar;
     const sisaPersen = totalMasuk > 0 ? (sisaSaldo / totalMasuk) * 100 : 0;
 
-    // 2. Account balances matching the screenshot
-    // Screenshot: Cash: Rp854.000 / Rp654.000, Dana: Rp168.988, Seabank: Rp48.815, Shoopepay: Rp71.175
-    const baseTargetBalances: Record<string, number> = {
-      cash: 654000,
-      dana: 168988,
-      seabank: 48815,
-      shoopepay: 71175,
-    };
-
-    // Calculate dynamic delta from initial seed so any new user transaction modifies balance accurately
-    const initialTxIds = new Set(INITIAL_TRANSACTIONS.map(t => t.id));
-    const dynamicDeltaPerAccount: Record<string, number> = {};
-
-    transactions.forEach(t => {
-      if (!initialTxIds.has(t.id)) {
-        if (!dynamicDeltaPerAccount[t.accountId]) dynamicDeltaPerAccount[t.accountId] = 0;
-        if (t.type === 'masuk') {
-          dynamicDeltaPerAccount[t.accountId] += t.amount;
-        } else {
-          dynamicDeltaPerAccount[t.accountId] -= t.amount;
-        }
-      }
-    });
-
+    // 2. Real-time Account balances: calculated from account initialBalance + all actual recorded transactions
     const accountBalances: Record<string, number> = {};
     accounts.forEach(acc => {
-      const base = baseTargetBalances[acc.id] ?? 0;
-      const delta = dynamicDeltaPerAccount[acc.id] ?? 0;
-      accountBalances[acc.id] = base + delta;
+      accountBalances[acc.id] = acc.initialBalance || 0;
+    });
+
+    transactions.forEach(t => {
+      if (accountBalances[t.accountId] === undefined) {
+        accountBalances[t.accountId] = 0;
+      }
+      if (t.type === 'masuk') {
+        accountBalances[t.accountId] += t.amount;
+      } else {
+        accountBalances[t.accountId] -= t.amount;
+      }
     });
 
     return {

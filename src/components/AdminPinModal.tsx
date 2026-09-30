@@ -19,6 +19,7 @@ import {
   Smartphone
 } from 'lucide-react';
 import { Account, Transaction } from '../types/finance.ts';
+import { parseRupiahInput, formatRupiah } from '../utils/formatters.ts';
 
 export const ADMIN_PIN_KEY = 'dompet_toko_admin_pin';
 export const DEFAULT_ADMIN_PIN = '1234';
@@ -49,8 +50,8 @@ interface AdminPinModalProps {
   onLogoutAdmin: () => void;
   accounts: Account[];
   transactions: Transaction[];
-  onAddAccount: (acc: { name: string; type: 'cash' | 'bank' | 'ewallet' }) => void;
-  onEditAccount: (id: string, updated: { name: string; type: 'cash' | 'bank' | 'ewallet' }) => void;
+  onAddAccount: (acc: { name: string; type: 'cash' | 'bank' | 'ewallet'; initialBalance?: number }) => void;
+  onEditAccount: (id: string, updated: { name: string; type: 'cash' | 'bank' | 'ewallet'; initialBalance?: number }) => void;
   onDeleteAccount: (id: string) => void;
 }
 
@@ -84,6 +85,7 @@ export const AdminPinModal: React.FC<AdminPinModalProps> = ({
   const [isAddingAccount, setIsAddingAccount] = useState(false);
   const [accountNameInput, setAccountNameInput] = useState('');
   const [accountTypeInput, setAccountTypeInput] = useState<'cash' | 'bank' | 'ewallet'>('bank');
+  const [accountInitialBalance, setAccountInitialBalance] = useState<string>('0');
   const [deletingAccountId, setDeletingAccountId] = useState<string | null>(null);
 
   if (!isOpen) return null;
@@ -155,20 +157,25 @@ export const AdminPinModal: React.FC<AdminPinModalProps> = ({
       return;
     }
 
+    const initBal = parseRupiahInput(accountInitialBalance);
+
     if (isEditingAccountId) {
       onEditAccount(isEditingAccountId, {
         name: accountNameInput.trim(),
         type: accountTypeInput,
+        initialBalance: initBal,
       });
       setIsEditingAccountId(null);
     } else {
       onAddAccount({
         name: accountNameInput.trim(),
         type: accountTypeInput,
+        initialBalance: initBal,
       });
       setIsAddingAccount(false);
     }
     setAccountNameInput('');
+    setAccountInitialBalance('0');
   };
 
   const handleStartEditAccount = (acc: Account) => {
@@ -176,6 +183,7 @@ export const AdminPinModal: React.FC<AdminPinModalProps> = ({
     setIsAddingAccount(false);
     setAccountNameInput(acc.name);
     setAccountTypeInput(acc.type);
+    setAccountInitialBalance(String(acc.initialBalance || 0));
     setErrorMessage('');
   };
 
@@ -295,6 +303,7 @@ export const AdminPinModal: React.FC<AdminPinModalProps> = ({
                           setIsEditingAccountId(null);
                           setAccountNameInput('');
                           setAccountTypeInput('bank');
+                          setAccountInitialBalance('0');
                           setErrorMessage('');
                         }}
                         className="px-2.5 py-1.5 rounded-xl bg-[#1e3a5f] hover:bg-[#152942] text-white font-bold text-xs flex items-center gap-1 transition shadow-2xs cursor-pointer"
@@ -357,6 +366,23 @@ export const AdminPinModal: React.FC<AdminPinModalProps> = ({
                         </div>
                       </div>
 
+                      <div>
+                        <label className="block text-[11px] font-medium text-slate-600 mb-1">
+                          Saldo Awal (Rp):
+                        </label>
+                        <input
+                          type="text"
+                          inputMode="numeric"
+                          value={accountInitialBalance}
+                          onChange={(e) => setAccountInitialBalance(e.target.value.replace(/[^0-9]/g, ''))}
+                          placeholder="0"
+                          className="w-full bg-white text-slate-800 text-xs rounded-xl px-3 py-2 border border-slate-300 focus:outline-none focus:ring-1 focus:ring-[#1e3a5f] font-mono"
+                        />
+                        <p className="text-[10px] text-slate-400 mt-0.5">
+                          Saldo awal saat toko pertama kali mulai (isi 0 jika saldo dihitung murni dari transaksi).
+                        </p>
+                      </div>
+
                       <div className="flex items-center gap-2 pt-1">
                         <button
                           type="submit"
@@ -370,6 +396,7 @@ export const AdminPinModal: React.FC<AdminPinModalProps> = ({
                             setIsAddingAccount(false);
                             setIsEditingAccountId(null);
                             setAccountNameInput('');
+                            setAccountInitialBalance('0');
                             setErrorMessage('');
                           }}
                           className="py-2 px-3 rounded-xl bg-slate-200 hover:bg-slate-300 text-slate-700 font-semibold text-xs transition cursor-pointer"
@@ -403,7 +430,13 @@ export const AdminPinModal: React.FC<AdminPinModalProps> = ({
                                 <div className="flex items-center gap-1.5 text-[10px] text-slate-500 mt-0.5">
                                   <span>{getAccountTypeLabel(acc.type)}</span>
                                   <span>•</span>
-                                  <span>{txCount} transaksi tercatat</span>
+                                  <span>{txCount} transaksi</span>
+                                  {acc.initialBalance > 0 && (
+                                    <>
+                                      <span>•</span>
+                                      <span className="text-emerald-700 font-medium">Awal: {formatRupiah(acc.initialBalance)}</span>
+                                    </>
+                                  )}
                                 </div>
                               </div>
                             </div>
