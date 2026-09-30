@@ -1,6 +1,6 @@
 {
   "name": "Dompet Pintar - Catat Keuangan Otomatis & Pelacak Pengeluaran",
-  "description": "Aplikasi pencatatan keuangan pribadi & toko otomatis dengan integrasi Neon PostgreSQL, siap deploy ke Vercel, filter pengeluaran bulanan, dan analisis saldo dompet multi-akun.",
+  "description": "Aplikasi pencatatan keuangan pribadi & toko otomatis.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

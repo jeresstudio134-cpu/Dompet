@@ -290,6 +290,8 @@ export const DompetTokoView: React.FC<DompetTokoViewProps> = ({
   // Filtered transactions for Filter tab
   const filteredList = transactions.filter(t => {
     if (filter.monthYear !== 'ALL' && !t.date.startsWith(filter.monthYear)) return false;
+    if (filter.dateFrom && t.date < filter.dateFrom) return false;
+    if (filter.dateTo && t.date > filter.dateTo) return false;
     if (filter.accountId !== 'ALL' && t.accountId !== filter.accountId && t.transferTargetAccountId !== filter.accountId) return false;
     if (filter.type !== 'ALL' && t.type !== filter.type) return false;
     if (filter.category !== 'ALL') {
@@ -305,6 +307,29 @@ export const DompetTokoView: React.FC<DompetTokoViewProps> = ({
     }
     return true;
   });
+
+  // Check if any filter criteria is active
+  const isFilterActive = Boolean(
+    filter.monthYear !== 'ALL' ||
+    filter.accountId !== 'ALL' ||
+    filter.type !== 'ALL' ||
+    filter.category !== 'ALL' ||
+    filter.searchQuery.trim() ||
+    filter.dateFrom ||
+    filter.dateTo
+  );
+
+  const handleResetFilter = () => {
+    onFilterChange({
+      monthYear: 'ALL',
+      accountId: 'ALL',
+      type: 'ALL',
+      category: 'ALL',
+      searchQuery: '',
+      dateFrom: '',
+      dateTo: '',
+    });
+  };
 
   const getAccountName = (id: string) => {
     return accounts.find(a => a.id === id)?.name || id;
@@ -864,6 +889,27 @@ export const DompetTokoView: React.FC<DompetTokoViewProps> = ({
         {activeTab === 'filter' && (
           <div className="space-y-3.5 text-xs">
             
+            {/* Header Toolbar Filter: Judul & Tombol Reset Filter */}
+            <div className="flex items-center justify-between pb-1.5 border-b border-slate-100">
+              <span className="font-bold text-slate-700 text-xs flex items-center gap-1.5">
+                <FilterIcon className="w-3.5 h-3.5 text-[#1e3a5f]" />
+                Filter Transaksi
+              </span>
+              <button
+                type="button"
+                onClick={handleResetFilter}
+                className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-bold transition cursor-pointer active:scale-95 ${
+                  isFilterActive
+                    ? 'bg-rose-50 text-rose-700 border border-rose-300 hover:bg-rose-100 shadow-2xs'
+                    : 'bg-slate-100 text-slate-600 hover:bg-slate-200 border border-slate-200'
+                }`}
+                title="Reset semua filter kembali ke awal"
+              >
+                <RotateCcw className="w-3 h-3" />
+                <span>Reset Filter</span>
+              </button>
+            </div>
+
             {/* Periode Bulan Selector */}
             <div>
               <label className="block font-semibold text-slate-700 mb-1">
@@ -880,6 +926,52 @@ export const DompetTokoView: React.FC<DompetTokoViewProps> = ({
                   </option>
                 ))}
               </select>
+            </div>
+
+            {/* Rentang Tanggal (Dari Tanggal — Sampai Tanggal) */}
+            <div>
+              <div className="flex items-center justify-between mb-1">
+                <label className="block font-semibold text-slate-700">
+                  Rentang Tanggal (Dari — Sampai):
+                </label>
+                {(filter.dateFrom || filter.dateTo) && (
+                  <button
+                    type="button"
+                    onClick={() => onFilterChange({ dateFrom: '', dateTo: '' })}
+                    className="text-[11px] text-[#1e3a5f] hover:underline font-bold cursor-pointer"
+                  >
+                    Reset Tanggal
+                  </button>
+                )}
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <span className="block text-[11px] text-slate-500 mb-0.5 font-medium">Dari Tanggal:</span>
+                  <input
+                    type="date"
+                    value={filter.dateFrom || ''}
+                    onChange={(e) => onFilterChange({ dateFrom: e.target.value })}
+                    className={`w-full rounded-lg p-2 border font-medium focus:outline-none focus:ring-1 focus:ring-[#1e3a5f] text-xs transition ${
+                      filter.dateFrom 
+                        ? 'bg-amber-50/60 border-amber-400 text-slate-900 font-semibold' 
+                        : 'bg-white border-slate-300 text-slate-800'
+                    }`}
+                  />
+                </div>
+                <div>
+                  <span className="block text-[11px] text-slate-500 mb-0.5 font-medium">Sampai Tanggal:</span>
+                  <input
+                    type="date"
+                    value={filter.dateTo || ''}
+                    onChange={(e) => onFilterChange({ dateTo: e.target.value })}
+                    className={`w-full rounded-lg p-2 border font-medium focus:outline-none focus:ring-1 focus:ring-[#1e3a5f] text-xs transition ${
+                      filter.dateTo 
+                        ? 'bg-amber-50/60 border-amber-400 text-slate-900 font-semibold' 
+                        : 'bg-white border-slate-300 text-slate-800'
+                    }`}
+                  />
+                </div>
+              </div>
             </div>
 
             {/* Filter Kategori */}
@@ -969,51 +1061,48 @@ export const DompetTokoView: React.FC<DompetTokoViewProps> = ({
             </div>
 
             {/* Period Summary Result */}
-            <div className="bg-slate-50 border border-slate-200 rounded-xl p-2.5 space-y-1">
-              <div className="flex items-center justify-between text-slate-600 font-medium">
-                <span>Ditemukan:</span>
-                <div className="flex items-center gap-2">
-                  <span className="font-bold text-slate-800">{filteredList.length} transaksi</span>
-                  {(filter.monthYear !== 'ALL' || filter.accountId !== 'ALL' || filter.type !== 'ALL' || filter.category !== 'ALL' || filter.searchQuery) && (
-                    <button
-                      type="button"
-                      onClick={() => onFilterChange({
-                        monthYear: 'ALL',
-                        accountId: 'ALL',
-                        type: 'ALL',
-                        category: 'ALL',
-                        searchQuery: '',
-                      })}
-                      className="text-[10px] text-rose-600 hover:underline font-bold"
-                    >
-                      Reset Filter
-                    </button>
-                  )}
-                </div>
-              </div>
-              
-              {filter.category !== 'ALL' && (
-                <div className="flex items-center justify-between text-amber-900 font-bold bg-amber-50 px-2 py-1 rounded-md border border-amber-200">
-                  <span>Total Kategori "{filter.category === 'EMPTY' ? 'Tanpa Kategori' : filter.category}":</span>
-                  <span>
-                    {formatRupiah(filteredList.reduce((sum, t) => sum + t.amount, 0))}
-                  </span>
-                </div>
-              )}
+            {(() => {
+              const totalMasuk = filteredList.filter(t => t.type === 'masuk').reduce((sum, t) => sum + t.amount, 0);
+              const totalKeluar = filteredList.filter(t => t.type === 'keluar').reduce((sum, t) => sum + t.amount, 0);
+              const sisa = totalMasuk - totalKeluar;
 
-              <div className="flex items-center justify-between text-emerald-700 font-medium">
-                <span>Total Masuk Periode:</span>
-                <span className="font-bold">
-                  {formatRupiah(filteredList.filter(t => t.type === 'masuk').reduce((sum, t) => sum + t.amount, 0))}
-                </span>
-              </div>
-              <div className="flex items-center justify-between text-rose-700 font-medium">
-                <span>Total Keluar Periode:</span>
-                <span className="font-bold">
-                  {formatRupiah(filteredList.filter(t => t.type === 'keluar').reduce((sum, t) => sum + t.amount, 0))}
-                </span>
-              </div>
-            </div>
+              return (
+                <div className="bg-slate-50 border border-slate-200 rounded-xl p-2.5 space-y-1.5">
+                  <div className="flex items-center justify-between text-slate-600 font-medium">
+                    <span>Ditemukan:</span>
+                    <span className="font-bold text-slate-800">{filteredList.length} transaksi</span>
+                  </div>
+                  
+                  {filter.category !== 'ALL' && (
+                    <div className="flex items-center justify-between text-amber-900 font-bold bg-amber-50 px-2 py-1 rounded-md border border-amber-200">
+                      <span>Total Kategori "{filter.category === 'EMPTY' ? 'Tanpa Kategori' : filter.category}":</span>
+                      <span>
+                        {formatRupiah(filteredList.reduce((sum, t) => sum + t.amount, 0))}
+                      </span>
+                    </div>
+                  )}
+
+                  <div className="flex items-center justify-between text-emerald-700 font-medium">
+                    <span>Total Masuk Periode:</span>
+                    <span className="font-bold font-mono">
+                      {formatRupiah(totalMasuk)}
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between text-rose-700 font-medium">
+                    <span>Total Keluar Periode:</span>
+                    <span className="font-bold font-mono">
+                      {formatRupiah(totalKeluar)}
+                    </span>
+                  </div>
+                  <div className="pt-1.5 mt-1 border-t border-slate-200 flex items-center justify-between font-bold">
+                    <span className="text-slate-800">Sisa:</span>
+                    <span className={`font-mono text-xs sm:text-sm font-extrabold ${sisa >= 0 ? 'text-emerald-700' : 'text-rose-700'}`}>
+                      {sisa < 0 ? '-' : ''}{formatRupiah(Math.abs(sisa))}
+                    </span>
+                  </div>
+                </div>
+              );
+            })()}
 
             {/* Filtered list preview (Full, no text truncation) */}
             <div className="max-h-[500px] overflow-y-auto divide-y divide-slate-100 border border-slate-200 rounded-xl bg-white">
@@ -1096,7 +1185,7 @@ export const DompetTokoView: React.FC<DompetTokoViewProps> = ({
               className="w-full py-2.5 rounded-lg bg-slate-800 hover:bg-slate-900 text-white font-bold flex items-center justify-center gap-1.5 transition cursor-pointer"
             >
               {isAdmin ? <Download className="w-3.5 h-3.5" /> : <Lock className="w-3.5 h-3.5 text-amber-300" />}
-              <span>{isAdmin ? 'Ekspor Hasil Filter ke Excel (.CSV)' : 'Ekspor Hasil Filter ke Excel (Perlu PIN Admin)'}</span>
+              <span>{isAdmin ? 'Ekspor Hasil Filter ke Excel' : 'Ekspor Hasil Filter ke Excel (Perlu PIN Admin)'}</span>
             </button>
 
           </div>

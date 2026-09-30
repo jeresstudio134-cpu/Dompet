@@ -16,6 +16,7 @@ interface ExportImportModalProps {
   isOpen: boolean;
   onClose: () => void;
   transactions: Transaction[];
+  filteredTransactions?: Transaction[];
   accounts: Account[];
   onImportTransactions: (imported: Transaction[]) => void;
 }
@@ -24,6 +25,7 @@ export const ExportImportModal: React.FC<ExportImportModalProps> = ({
   isOpen,
   onClose,
   transactions,
+  filteredTransactions,
   accounts,
   onImportTransactions,
 }) => {
@@ -32,6 +34,9 @@ export const ExportImportModal: React.FC<ExportImportModalProps> = ({
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   if (!isOpen) return null;
+
+  const exportList = filteredTransactions !== undefined ? filteredTransactions : transactions;
+  const isFiltered = filteredTransactions !== undefined && filteredTransactions.length !== transactions.length;
 
   const HEADERS = ['No', 'Tanggal', 'Keterangan', 'Akun', 'Jenis', 'Kategori', 'Nominal', 'Catatan'];
 
@@ -90,7 +95,7 @@ export const ExportImportModal: React.FC<ExportImportModalProps> = ({
 
   // 1. Export to Excel Native Spreadsheet (.xls) - Opens directly in distinct columns
   const handleExportExcel = () => {
-    const rows = transactions.map((t, idx) => {
+    const rows = exportList.map((t, idx) => {
       const acc = accounts.find(a => a.id === t.accountId)?.name || t.accountId;
       return [
         t.no || idx + 1,
@@ -117,7 +122,7 @@ export const ExportImportModal: React.FC<ExportImportModalProps> = ({
 
   // 2. Export to CSV with Excel sep=, directive
   const handleExportCSV = () => {
-    const rows = transactions.map((t, idx) => {
+    const rows = exportList.map((t, idx) => {
       const acc = accounts.find(a => a.id === t.accountId)?.name || t.accountId;
       return [
         t.no || idx + 1,
@@ -396,7 +401,15 @@ export const ExportImportModal: React.FC<ExportImportModalProps> = ({
           {activeTab === 'export' ? (
             <div className="space-y-4">
               <p className="text-xs text-slate-600">
-                Unduh seluruh <strong>{transactions.length}</strong> riwayat transaksi toko Anda ke format Excel (rapi per kolom) atau file cadangan JSON:
+                {isFiltered ? (
+                  <>
+                    Unduh <strong>{exportList.length}</strong> transaksi hasil filter (dari total {transactions.length} transaksi) ke format Excel atau CSV:
+                  </>
+                ) : (
+                  <>
+                    Unduh seluruh <strong>{transactions.length}</strong> riwayat transaksi toko Anda ke format Excel (rapi per kolom) atau file cadangan JSON:
+                  </>
+                )}
               </p>
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -411,7 +424,7 @@ export const ExportImportModal: React.FC<ExportImportModalProps> = ({
                   </div>
                   <div>
                     <div className="flex items-center gap-1.5">
-                      <h4 className="font-bold text-slate-800 text-xs">Excel (.XLS)</h4>
+                      <h4 className="font-bold text-slate-800 text-xs">Format Excel</h4>
                       <span className="px-1.5 py-0.2 rounded-md bg-emerald-100 text-emerald-800 text-[9px] font-bold">Rekomendasi</span>
                     </div>
                     <p className="text-[10px] text-slate-500 mt-0.5">
@@ -430,7 +443,7 @@ export const ExportImportModal: React.FC<ExportImportModalProps> = ({
                     <FileSpreadsheet className="w-4 h-4" />
                   </div>
                   <div>
-                    <h4 className="font-bold text-slate-800 text-xs">Format CSV (.CSV)</h4>
+                    <h4 className="font-bold text-slate-800 text-xs">Format CSV</h4>
                     <p className="text-[10px] text-slate-500 mt-0.5">
                       Dengan pemisah koma terstandarisasi.
                     </p>
@@ -480,7 +493,7 @@ export const ExportImportModal: React.FC<ExportImportModalProps> = ({
                     className="px-3 py-2 rounded-xl bg-[#1b7a4b] hover:bg-[#156a40] text-white font-bold text-xs flex items-center justify-center gap-1.5 transition shadow-xs cursor-pointer"
                   >
                     <Download className="w-3.5 h-3.5" />
-                    <span>Download Excel (.XLS)</span>
+                    <span>Download Template Excel</span>
                   </button>
                   <button
                     type="button"
@@ -488,7 +501,7 @@ export const ExportImportModal: React.FC<ExportImportModalProps> = ({
                     className="px-3 py-2 rounded-xl bg-white border border-emerald-300 text-emerald-900 font-bold text-xs hover:bg-emerald-100/50 flex items-center justify-center gap-1.5 transition cursor-pointer"
                   >
                     <FileSpreadsheet className="w-3.5 h-3.5" />
-                    <span>Download CSV (.CSV)</span>
+                    <span>Download Template CSV</span>
                   </button>
                 </div>
 

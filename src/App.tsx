@@ -335,6 +335,29 @@ export default function App() {
     };
   }, [transactions, accounts]);
 
+  // Filtered transactions matching the active filters
+  const filteredTransactions = useMemo(() => {
+    return transactions.filter(t => {
+      if (filter.monthYear !== 'ALL' && !t.date.startsWith(filter.monthYear)) return false;
+      if (filter.dateFrom && t.date < filter.dateFrom) return false;
+      if (filter.dateTo && t.date > filter.dateTo) return false;
+      if (filter.accountId !== 'ALL' && t.accountId !== filter.accountId && t.transferTargetAccountId !== filter.accountId) return false;
+      if (filter.type !== 'ALL' && t.type !== filter.type) return false;
+      if (filter.category !== 'ALL') {
+        if (filter.category === 'EMPTY') {
+          if (t.category && t.category.trim() !== '' && t.category !== '-') return false;
+        } else if (t.category !== filter.category) {
+          return false;
+        }
+      }
+      if (filter.searchQuery.trim()) {
+        const q = filter.searchQuery.toLowerCase();
+        if (!t.description.toLowerCase().includes(q) && !t.category?.toLowerCase().includes(q)) return false;
+      }
+      return true;
+    });
+  }, [transactions, filter]);
+
   // Handler: Add new transactions (from Auto Record or Manual)
   const handleAddTransactions = (newItems: Omit<Transaction, 'id'>[]) => {
     const created: Transaction[] = newItems.map((item, idx) => ({
@@ -529,6 +552,7 @@ export default function App() {
         isOpen={isExportImportOpen}
         onClose={() => setIsExportImportOpen(false)}
         transactions={transactions}
+        filteredTransactions={filteredTransactions}
         accounts={accounts}
         onImportTransactions={(imported) => {
           setTransactions(prev => [...imported, ...prev]);
