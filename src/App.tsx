@@ -605,11 +605,37 @@ export default function App() {
         transactions={transactions}
         filteredTransactions={filteredTransactions}
         accounts={accounts}
-        onImportTransactions={async (imported) => {
+        categories={categories}
+        onImportTransactions={async (imported, newAccounts, newCategories) => {
           try {
+            // 1. Simpan akun baru otomatis jika ada di file Excel (mis. BRI, BCA)
+            if (newAccounts && newAccounts.length > 0) {
+              for (const acc of newAccounts) {
+                await apiSaveAccount(acc);
+              }
+              setAccounts(prev => {
+                const existingIds = new Set(prev.map(a => a.id));
+                const toAdd = newAccounts.filter(a => !existingIds.has(a.id));
+                return [...prev, ...toAdd];
+              });
+            }
+
+            // 2. Simpan kategori baru otomatis jika ada di file Excel
+            if (newCategories && newCategories.length > 0) {
+              for (const cat of newCategories) {
+                await apiAddCategory(cat);
+              }
+              setCategories(prev => Array.from(new Set([...prev, ...newCategories])));
+            }
+
+            // 3. Simpan transaksi
             await apiSaveTransactions(imported);
             setTransactions(prev => [...imported, ...prev]);
-            showToast(`${imported.length} transaksi berhasil diimpor!`);
+
+            const accInfo = newAccounts && newAccounts.length > 0
+              ? ` & ${newAccounts.length} akun baru (${newAccounts.map(a => a.name).join(', ')}) otomatis dibuat!`
+              : '!';
+            showToast(`${imported.length} transaksi berhasil diimpor${accInfo}`);
           } catch (e) {
             console.error(e);
             showToast('Gagal mengimpor transaksi ke database.', 'error');

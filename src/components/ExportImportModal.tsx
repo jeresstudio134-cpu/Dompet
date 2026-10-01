@@ -18,7 +18,12 @@ interface ExportImportModalProps {
   transactions: Transaction[];
   filteredTransactions?: Transaction[];
   accounts: Account[];
-  onImportTransactions: (imported: Transaction[]) => void;
+  categories?: string[];
+  onImportTransactions: (
+    imported: Transaction[],
+    newAccounts?: Account[],
+    newCategories?: string[]
+  ) => void | Promise<void>;
 }
 
 export const ExportImportModal: React.FC<ExportImportModalProps> = ({
@@ -27,6 +32,7 @@ export const ExportImportModal: React.FC<ExportImportModalProps> = ({
   transactions,
   filteredTransactions,
   accounts,
+  categories = [],
   onImportTransactions,
 }) => {
   const [activeTab, setActiveTab] = useState<'export' | 'import'>('export');
@@ -406,6 +412,60 @@ export const ExportImportModal: React.FC<ExportImportModalProps> = ({
     return result;
   };
 
+  // Helper untuk mengenali atau otomatis membuat akun baru jika ada akun baru di file (mis. BRI, BCA)
+  const resolveAccountForImport = (
+    rawName: string,
+    existingAccounts: Account[],
+    newAccountsMap: Map<string, Account>
+  ): string => {
+    const clean = (rawName || 'Cash').trim();
+    if (!clean) return 'cash';
+    const lower = clean.toLowerCase();
+
+    // 1. Cocokkan ID atau Nama dengan akun yang sudah ada
+    const found = existingAccounts.find(
+      a => a.id.toLowerCase() === lower || a.name.toLowerCase() === lower
+    );
+    if (found) return found.id;
+
+    // 2. Cek apakah sudah dibuat di map akun baru pada proses impor ini
+    const sanitizedId = lower.replace(/[^a-z0-9]/g, '') || `acc_${Date.now()}`;
+    if (newAccountsMap.has(sanitizedId)) {
+      return sanitizedId;
+    }
+
+    // 3. Buat akun baru secara otomatis!
+    let accType: 'bank' | 'ewallet' | 'cash' = 'cash';
+    let color = '#0284c7';
+    let iconName = 'Landmark';
+
+    if (/(?:bank|bca|bri|bni|mandiri|cimb|jago|jenius|bsi|permata|btn)/i.test(clean)) {
+      accType = 'bank';
+      color = lower.includes('bri') ? '#0284c7' : lower.includes('bca') ? '#0369a1' : '#0ea5e9';
+      iconName = 'Landmark';
+    } else if (/(?:dana|gopay|ovo|shopee|spay|linkaja|qris)/i.test(clean)) {
+      accType = 'ewallet';
+      color = '#0d9488';
+      iconName = 'Smartphone';
+    } else {
+      accType = 'cash';
+      color = '#16a34a';
+      iconName = 'Wallet';
+    }
+
+    const newAcc: Account = {
+      id: sanitizedId,
+      name: clean.length <= 4 ? clean.toUpperCase() : clean.charAt(0).toUpperCase() + clean.slice(1),
+      type: accType,
+      color,
+      iconName,
+      initialBalance: 0,
+    };
+
+    newAccountsMap.set(sanitizedId, newAcc);
+    return sanitizedId;
+  };
+
   // Handle JSON, Excel (.xls), or CSV import
   const handleFileImport = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -416,6 +476,9 @@ export const ExportImportModal: React.FC<ExportImportModalProps> = ({
 
     reader.onload = (event) => {
       const content = event.target?.result as string;
+      const newAccountsMap = new Map<string, Account>();
+      const newCategoriesSet = new Set<string>();
+
       try {
         // CASE A: JSON backup
         if (file.name.endsWith('.json')) {
@@ -424,8 +487,18 @@ export const ExportImportModal: React.FC<ExportImportModalProps> = ({
             onImportTransactions(parsed);
             setImportStatus({ message: `Berhasil mengimpor ${parsed.length} transaksi dari file JSON.` });
           } else if (parsed.transactions && Array.isArray(parsed.transactions)) {
-            onImportTransactions(parsed.transactions);
-            setImportStatus({ message: `Berhasil mengimpor ${parsed.transactions.length} transaksi dari backup JSON.` });
+            // Jika ada accounts di JSON
+            if (Array.isArray(parsed.accounts)) {
+              parsed.accounts.forEach((acc: Account) => {
+                if (acc && acc.id && !accounts.some(a => a.id === acc.id)) {
+                  newAccountsMap.set(acc.id, acc);
+                }
+              });
+            }
+            const newAccList = Array.from(newAccountsMap.values());
+            onImportTransactions(parsed.transactions, newAccList);
+            const extra = newAccList.length > 0 ? ` & ${newAccList.length} akun dipulihkan (${newAccList.map(a => a.name).join(', ')})` : '';
+            setImportStatus({ message: `Berhasil mengimpor ${parsed.transactions.length} transaksi dari backup JSON${extra}.` });
           }
           return;
         }
@@ -442,14 +515,20 @@ export const ExportImportModal: React.FC<ExportImportModalProps> = ({
             if (tds.length >= 6) {
               const amount = parseInt((tds[6] || tds[5]).replace(/[^0-9]/g, ''), 10) || 0;
               if (amount > 0) {
+                const accId = resolveAccountForImport(tds[3], accounts, newAccountsMap);
+                const catName = tds[5] || 'Lainnya';
+                if (catName && !categories.includes(catName)) {
+                  newCategoriesSet.add(catName);
+                }
+
                 imported.push({
                   id: `tx-imp-${Date.now()}-${i}`,
                   no: parseInt(tds[0], 10) || i + 1,
                   date: tds[1] || new Date().toISOString().split('T')[0],
                   description: tds[2] || 'Transaksi',
-                  accountId: (tds[3] || 'cash').toLowerCase().replace(/\s+/g, ''),
+                  accountId: accId,
                   type: (tds[4] || '').toLowerCase().includes('masuk') ? 'masuk' : 'keluar',
-                  category: tds[5] || 'Lainnya',
+                  category: catName,
                   amount,
                   notes: tds[7] || undefined,
                 });
@@ -458,8 +537,14 @@ export const ExportImportModal: React.FC<ExportImportModalProps> = ({
           });
 
           if (imported.length > 0) {
-            onImportTransactions(imported);
-            setImportStatus({ message: `Berhasil mengimpor ${imported.length} transaksi dari file Excel.` });
+            const newAccList = Array.from(newAccountsMap.values());
+            const newCatList = Array.from(newCategoriesSet.values());
+            onImportTransactions(imported, newAccList, newCatList);
+            let msg = `Berhasil mengimpor ${imported.length} transaksi dari file Excel.`;
+            if (newAccList.length > 0) {
+              msg += ` Akun baru otomatis dibuat: ${newAccList.map(a => a.name).join(', ')}.`;
+            }
+            setImportStatus({ message: msg });
           } else {
             setImportStatus({ message: 'Tidak ditemukan baris transaksi yang valid di file Excel.', isError: true });
           }
@@ -491,14 +576,20 @@ export const ExportImportModal: React.FC<ExportImportModalProps> = ({
             const rawAmount = cols[6] !== undefined && cols[6] !== '' ? cols[6] : cols[5];
             const amount = parseInt(rawAmount.replace(/[^0-9]/g, ''), 10) || 0;
             if (amount > 0) {
+              const accId = resolveAccountForImport(cols[3], accounts, newAccountsMap);
+              const catName = cols[5] || 'Lainnya';
+              if (catName && !categories.includes(catName)) {
+                newCategoriesSet.add(catName);
+              }
+
               imported.push({
                 id: `tx-imp-${Date.now()}-${i}`,
                 no: parseInt(cols[0], 10) || i,
                 date: cols[1],
                 description: cols[2] || 'Transaksi',
-                accountId: (cols[3] || 'cash').toLowerCase().replace(/\s+/g, ''),
+                accountId: accId,
                 type: (cols[4] || '').toLowerCase().includes('masuk') ? 'masuk' : 'keluar',
-                category: cols[5] || 'Lainnya',
+                category: catName,
                 amount,
                 notes: cols[7] || undefined,
               });
@@ -507,8 +598,14 @@ export const ExportImportModal: React.FC<ExportImportModalProps> = ({
         }
 
         if (imported.length > 0) {
-          onImportTransactions(imported);
-          setImportStatus({ message: `Berhasil mengimpor ${imported.length} transaksi dari CSV.` });
+          const newAccList = Array.from(newAccountsMap.values());
+          const newCatList = Array.from(newCategoriesSet.values());
+          onImportTransactions(imported, newAccList, newCatList);
+          let msg = `Berhasil mengimpor ${imported.length} transaksi dari CSV.`;
+          if (newAccList.length > 0) {
+            msg += ` Akun baru otomatis dibuat: ${newAccList.map(a => a.name).join(', ')}.`;
+          }
+          setImportStatus({ message: msg });
         } else {
           setImportStatus({ message: 'Tidak ada data transaksi yang valid dalam file CSV. Pastikan kolom sesuai petunjuk.', isError: true });
         }
@@ -580,11 +677,11 @@ export const ExportImportModal: React.FC<ExportImportModalProps> = ({
               <p className="text-xs text-slate-600">
                 {isFiltered ? (
                   <>
-                    Unduh <strong>{exportList.length}</strong> transaksi hasil filter (dari total {transactions.length} transaksi) ke format Excel atau CSV:
+                    Unduh <strong>{exportList.length} baris transaksi</strong> hasil filter (dari total {transactions.length} transaksi di {accounts.length} akun) ke format Excel atau CSV:
                   </>
                 ) : (
                   <>
-                    Unduh seluruh <strong>{transactions.length}</strong> riwayat transaksi toko Anda ke format Excel (rapi per kolom) atau file cadangan JSON:
+                    Unduh seluruh <strong>{transactions.length} data transaksi</strong> (tersimpan di {accounts.length} akun/dompet toko) ke format Excel, CSV, atau backup JSON:
                   </>
                 )}
               </p>
