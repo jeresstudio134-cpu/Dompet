@@ -1,81 +1,63 @@
-import { GoogleGenAI } from '@google/genai';
+import { apiAiParse, AiParsedItem } from './api.ts';
 import { ParsedTransactionResult } from './autoParser.ts';
-import { getCurrentDateIndo } from '../utils/formatters.ts';
 
-export const parseReceiptWithGemini = async (
-  imageBase64: string,
-  mimeType = 'image/jpeg'
-): Promise<ParsedTransactionResult[]> => {
-  const apiKey = process.env.GEMINI_API_KEY || (window as any).__GEMINI_API_KEY;
+const MAX_SIDE = 1600;
 
-  if (!apiKey) {
-    throw new Error('GEMINI_API_KEY tidak ditemukan. Fitur analisis struk AI memerlukan konfigurasi Gemini API Key.');
-  }
+// Kecilkan foto agar muat di batas upload server dan lebih cepat diproses AI
+export const compressImage = (
+  file: File
+): Promise<{ base64: string; mimeType: string; preview: string }> =>
+  new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(file);
+    const img = new Image();
 
-  const ai = new GoogleGenAI({ apiKey });
+    img.onload = () => {
+      const scale = Math.min(1, MAX_SIDE / Math.max(img.width, img.height));
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.round(img.width * scale);
+      canvas.height = Math.round(img.height * scale);
 
-  const prompt = `Kamu adalah asisten keuangan pribadi & toko profesional di Indonesia.
-Analisis gambar struk belanja / invoice / bukti transfer ini.
-Ekstrak semua transaksi yang tercatat dan kembalikan HANYA JSON array murni tanpa markdown formatting atau pembungkus \`\`\`json.
+      const ctx = canvas.getContext('2d');
+      if (!ctx) {
+        URL.revokeObjectURL(url);
+        reject(new Error('Browser tidak mendukung pemrosesan foto.'));
+        return;
+      }
 
-Format JSON array yang diharapkan:
-[
-  {
-    "date": "YYYY-MM-DD",
-    "description": "Nama item atau toko (contoh: Semen Gresik / Indomaret / Bensin Pertalite)",
-    "accountId": "cash" atau "dana" atau "seabank" atau "shoopepay",
-    "type": "keluar" atau "masuk",
-    "category": "Pribadi" atau "Pokok" atau "Kendaraan" atau "Bangun Rumah" atau "Operasional Toko" atau "Pemasukan Toko",
-    "amount": 25000,
-    "confidence": 0.95
-  }
-]
+      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+      const dataUrl = canvas.toDataURL('image/jpeg', 0.82);
+      URL.revokeObjectURL(url);
+      resolve({ base64: dataUrl.split(',')[1], mimeType: 'image/jpeg', preview: dataUrl });
+    };
 
-Panduan:
-- Jika tanggal tidak tertera di struk, gunakan tanggal hari ini: ${getCurrentDateIndo()}.
-- Nominal harus berupa bilangan bulat positif angka (Rupiah).
-- Pilih accountId yang paling mendekati dari metode pembayaran di struk (cash / dana / seabank / shoopepay). Jika tunai, gunakan "cash".
-- Pilih kategori yang paling cocok dari daftar kategori di atas.`;
+    img.onerror = () => {
+      URL.revokeObjectURL(url);
+      reject(new Error('File bukan foto yang valid (format HEIC dari iPhone belum didukung).'));
+    };
 
-  const cleanBase64 = imageBase64.replace(/^data:image\/\w+;base64,/, '');
-
-  const response = await ai.models.generateContent({
-    model: 'gemini-2.5-flash',
-    contents: [
-      {
-        parts: [
-          { text: prompt },
-          {
-            inlineData: {
-              data: cleanBase64,
-              mimeType,
-            },
-          },
-        ],
-      },
-    ],
+    img.src = url;
   });
 
-  const responseText = response.text || '';
-  const jsonClean = responseText.replace(/```json/gi, '').replace(/```/g, '').trim();
+const toResults = (items: AiParsedItem[]): ParsedTransactionResult[] =>
+  items.map(it => ({
+    date: it.date,
+    description: it.description,
+    accountId: it.accountId,
+    type: it.type,
+    category: it.category,
+    amount: it.amount,
+    transferTargetAccountId: it.transferToAccountId || undefined,
+    confidence: 0.95,
+    rawText: '',
+  }));
 
-  try {
-    const parsed = JSON.parse(jsonClean);
-    if (Array.isArray(parsed)) {
-      return parsed.map(item => ({
-        date: item.date || getCurrentDateIndo(),
-        description: item.description || 'Pengeluaran Struk',
-        accountId: item.accountId || 'cash',
-        type: item.type === 'masuk' ? 'masuk' : 'keluar',
-        category: item.category || 'Pribadi',
-        amount: Number(item.amount) || 0,
-        confidence: item.confidence || 0.9,
-        rawText: `Struk OCR: ${item.description} - Rp ${item.amount}`,
-      }));
-    }
-  } catch (err) {
-    console.error('Failed to parse Gemini receipt response:', responseText, err);
-  }
+// Teks bebas / paste banyak baris -> daftar transaksi
+export const parseTextWithGemini = async (text: string): Promise<ParsedTransactionResult[]> =>
+  toResults(await apiAiParse({ text }));
 
-  throw new Error('Gagal mengekstrak data transaksi dari struk. Pastikan foto struk terlihat jelas dan coba lagi.');
-};
+// Foto struk -> daftar transaksi (base64 boleh dengan atau tanpa awalan "data:...")
+export const parseReceiptWithGemini = async (
+  base64: string,
+  mimeType: string = 'image/jpeg'
+): Promise<ParsedTransactionResult[]> =>
+  toResults(await apiAiParse({ imageBase64: base64, mimeType }));

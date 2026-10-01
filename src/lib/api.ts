@@ -422,3 +422,30 @@ export const apiChangePin = async (currentPin: string, newPin: string): Promise<
   localStorage.setItem(LOCAL_PIN_KEY, newPin);
   return { success: true };
 };
+
+
+// Pencatatan otomatis dengan Gemini (dipanggil lewat server, hanya admin)
+export interface AiParsedItem {
+  date: string;
+  description: string;
+  accountId: string;
+  type: 'masuk' | 'keluar';
+  category: string;
+  amount: number;
+  transferToAccountId: string;
+}
+
+export const apiAiParse = async (payload: {
+  text?: string;
+  imageBase64?: string;
+  mimeType?: string;
+}): Promise<AiParsedItem[]> => {
+  const json = await safeRequest(API_URL, {
+    method: 'POST',
+    body: JSON.stringify({ entity: 'ai_parse', ...payload }),
+  });
+  if (!json || !json.transactions) {
+    throw new Error('Fitur AI server sedang tidak aktif.');
+  }
+  return (json.transactions || []) as AiParsedItem[];
+};

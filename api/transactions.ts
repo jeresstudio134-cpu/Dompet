@@ -1,4 +1,56 @@
 import { neon } from '@neondatabase/serverless';
+import { GoogleGenAI } from '@google/genai';
+
+export const config = { maxDuration: 60 }; // Gemini bisa butuh >10 detik untuk foto
+
+const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
+
+// Kebiasaan pencatatan (dipakai hanya jika kategorinya memang ada di database)
+const CATEGORY_HINTS: { category: string; examples: string }[] = [
+  { category: 'Kendaraan', examples: 'bensin, pertalite, pertamax, servis, oli, parkir, tol' },
+  { category: 'Pokok', examples: 'listrik, token, wifi, pdam, sembako, beras, kontrakan' },
+  { category: 'Bangun Rumah', examples: 'semen, pasir, batu bata, cat, keramik, tukang, material' },
+  { category: 'Pribadi', examples: 'makan, bakso, jajan, kopi, rokok, obat' },
+  { category: 'Operasional Toko', examples: 'stiker, banner, kertas, tinta, plastik, ongkir' },
+  { category: 'Toko', examples: 'pemasukan toko, penjualan, omset' },
+  { category: 'Pemasukan Toko', examples: 'pemasukan toko, penjualan, omset' },
+];
+
+function buildAiPrompt(accounts: any[], categories: string[], today: string, hasImage: boolean): string {
+  const accountList = accounts.map(a => `- id "${a.id}" = ${a.name} (${a.type})`).join('\n');
+  const categoryList = categories.length > 0 ? categories.map(c => `- ${c}`).join('\n') : '- (belum ada kategori)';
+  const hints = CATEGORY_HINTS
+    .filter(h => categories.some(c => c.toLowerCase() === h.category.toLowerCase()))
+    .map(h => `- ${h.category}: ${h.examples}`)
+    .join('\n');
+
+  return [
+    `Kamu adalah asisten pembukuan toko kecil di Indonesia. Ubah ${hasImage ? 'foto struk/nota dan/atau teks' : 'teks'} yang diberikan menjadi daftar transaksi keuangan.`,
+    '',
+    `Tanggal hari ini: ${today} (zona waktu WIB).`,
+    '',
+    'DAFTAR AKUN (accountId HARUS salah satu id ini):',
+    accountList,
+    '',
+    'DAFTAR KATEGORI (tulis persis seperti di daftar; jika tidak ada yang cocok, isi string kosong ""):',
+    categoryList,
+    hints ? `\nKebiasaan pengguna (kata kunci -> kategori):\n${hints}` : '',
+    '',
+    'ATURAN:',
+    '1. Satu transaksi per kejadian uang masuk/keluar. Satu baris teks biasanya satu transaksi. Abaikan teks yang bukan transaksi (sapaan, saldo akhir, nomor referensi, promo).',
+    '2. amount = bilangan bulat Rupiah tanpa titik/koma. "30rb" atau "30k" = 30000, "1,5jt" = 1500000, "125.000" = 125000, "Rp 2.500.000,00" = 2500000. Untuk notifikasi bank, pakai nominal transaksi, bukan saldo.',
+    '3. type: "keluar" untuk belanja, bayar, beli, tagihan, ongkir; "masuk" untuk pemasukan, penjualan, omset, terima, gaji. Jika ragu, pilih "keluar".',
+    '4. accountId: cocokkan nama atau alias yang disebut (mis. "tunai" = akun Cash, "spay" = ShopeePay). Jika tidak disebut, pakai akun bertipe cash; jika tidak ada, akun pertama.',
+    `5. date: format YYYY-MM-DD. Pakai tanggal pada teks/struk; "kemarin" = sehari sebelum tanggal hari ini. Jika tahun tidak tertulis, pakai tahun ${today.slice(0, 4)}. Jika tanggal tidak ada, pakai tanggal hari ini.`,
+    '6. description: singkat dan jelas, huruf awal kapital, tanpa nominal dan tanpa nama akun (mis. "Bensin", "Bulanan Wifi").',
+    '7. Pemindahan saldo antar akun (mis. "pindah 50rb dari seabank ke cash"): SATU entri dengan accountId = akun asal, transferToAccountId = akun tujuan, type "keluar", category "Pindah Saldo". Untuk transaksi biasa, transferToAccountId = "".',
+    hasImage
+      ? '8. Untuk foto struk: buat SATU transaksi "keluar" dengan total akhir yang dibayar (setelah diskon/pajak). description berisi nama toko dan 1-3 barang utama. Jangan dipecah per barang, kecuali ada beberapa struk berbeda pada gambar.'
+      : '',
+    '9. Jika tidak ada transaksi yang bisa dibaca, kembalikan array kosong [].',
+    '10. PENTING: Jika pengguna menulis instruksi seperti "kategori pokok semua", "buat kategori pokok semua", atau sejenisnya, MAKA SEMUA transaksi yang diekstrak HARUS menggunakan category yang diminta pengguna tersebut (misal "Pokok"). Jangan diubah ke kategori lain (seperti "Kendaraan" atau "Pribadi") meskipun ada kata seperti oli, infaq, atau nabung!',
+  ].join('\n');
+}
 
 let isInitialized = false;
 
@@ -145,6 +197,51 @@ export default async function handler(req: any, res: any) {
 
     // 2. POST / PUT: Insert or Update transaction
     if (req.method === 'POST' || req.method === 'PUT') {
+      // AI Parse (teks bebas atau foto struk via Gemini)
+      if (req.body.entity === 'ai_parse') {
+        const apiKey = process.env.GEMINI_API_KEY;
+        if (!apiKey) {
+          return res.status(500).json({ error: 'GEMINI_API_KEY belum dikonfigurasi di server.' });
+        }
+        const { text, imageBase64, mimeType } = req.body;
+        const accRows = await sql`SELECT id, name, type FROM accounts ORDER BY id ASC`;
+        const catRows = await sql`SELECT name FROM categories ORDER BY name ASC`;
+        const categories = catRows.map((c: any) => c.name);
+        const today = new Date().toISOString().split('T')[0];
+        const prompt = buildAiPrompt(accRows, categories, today, Boolean(imageBase64));
+
+        const ai = new GoogleGenAI({ apiKey });
+        const parts: any[] = [{ text: prompt }];
+        if (text) parts.push({ text: `\nTEKS DARI PENGGUNA:\n${text}` });
+        if (imageBase64) {
+          const cleanB64 = imageBase64.replace(/^data:image\/\w+;base64,/, '');
+          parts.push({
+            inlineData: {
+              data: cleanB64,
+              mimeType: mimeType || 'image/jpeg',
+            },
+          });
+        }
+
+        const response = await ai.models.generateContent({
+          model: GEMINI_MODEL,
+          contents: [{ parts }],
+          config: {
+            responseMimeType: 'application/json',
+          },
+        });
+
+        let transactions: any[] = [];
+        try {
+          const raw = response.text || '[]';
+          transactions = JSON.parse(raw);
+        } catch (e) {
+          console.warn('Failed to parse AI response as JSON:', e);
+        }
+
+        return res.status(200).json({ success: true, transactions });
+      }
+
       // Auth: login or change_pin
       if (req.body.entity === 'auth') {
         const { action, pin, currentPin, newPin } = req.body;

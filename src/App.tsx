@@ -358,7 +358,7 @@ export default function App() {
     (transactions.length > 0 ? Math.max(...transactions.map(t => t.no || 0)) : 0) + 1;
 
   // Handler: Add new transactions (from Auto Record)
-  const handleAddTransactions = async (newItems: Omit<Transaction, 'id'>[]) => {
+  const handleAddTransactions = async (newItems: Omit<Transaction, 'id'>[]): Promise<boolean> => {
     const startNo = getNextNo();
     const created: Transaction[] = newItems.map((item, idx) => ({
       ...item,
@@ -371,9 +371,11 @@ export default function App() {
       await apiSaveTransactions(created);
       setTransactions(prev => [...created, ...prev]);
       showToast(`Berhasil menambahkan ${created.length} transaksi!`);
+      return true;
     } catch (e) {
       console.error(e);
       showToast('Gagal menyimpan transaksi. Periksa koneksi lalu coba lagi.', 'error');
+      return false;
     }
   };
 
@@ -566,11 +568,6 @@ export default function App() {
           storeName={storeName}
         />
       </main>
-
-      {/* Footer info */}
-      <footer className="py-4 text-center text-[11px] text-slate-400">
-        {storeName} • Neon PostgreSQL & Vercel Ready
-      </footer>
 
       {/* MODALS */}
       {/* 1. Auto Record Modal (Smart Parsing, SMS, AI Struk) */}
