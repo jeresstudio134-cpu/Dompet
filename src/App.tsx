@@ -7,8 +7,7 @@ import React, { useState, useEffect, useMemo } from 'react';
 import confetti from 'canvas-confetti';
 import { 
   INITIAL_ACCOUNTS, 
-  INITIAL_CATEGORIES, 
-  INITIAL_TRANSACTIONS 
+  INITIAL_CATEGORIES 
 } from './data/initialData.ts';
 import { 
   Transaction, 
@@ -22,16 +21,20 @@ import {
   getCurrentDateIndo,
   formatRupiah 
 } from './utils/formatters.ts';
-import { 
-  LOCAL_ACC_KEY, 
-  LOCAL_TX_KEY, 
-  getSavedNeonConfig, 
-  saveNeonConfig,
-  syncAllToNeon,
-  persistTransactionToDatabase,
-  removeTransactionFromDatabase,
-  fetchAllFromNeon
-} from './lib/neon.ts';
+import { getSavedNeonConfig, saveNeonConfig } from './lib/neon.ts';
+import {
+  apiLoadAll,
+  apiSaveTransaction,
+  apiSaveTransactions,
+  apiDeleteTransaction,
+  apiSaveAccount,
+  apiDeleteAccount,
+  apiAddCategory,
+  apiDeleteCategory,
+  apiSaveSetting,
+  getAdminToken,
+  clearAdminToken
+} from './lib/api.ts';
 
 // Components
 import { DompetTokoView } from './components/DompetTokoView.tsx';
@@ -42,43 +45,25 @@ import { ExportImportModal } from './components/ExportImportModal.tsx';
 import { AdminPinModal } from './components/AdminPinModal.tsx';
 
 export default function App() {
-  // 1. Core State: Accounts & Transactions
-  const [accounts, setAccounts] = useState<Account[]>(() => {
-    try {
-      const stored = localStorage.getItem(LOCAL_ACC_KEY);
-      if (stored) return JSON.parse(stored);
-    } catch (e) {
-      console.error('Failed loading stored accounts:', e);
-    }
-    return INITIAL_ACCOUNTS;
-  });
+    // 1. Core State: semua data bersumber dari database (lewat /api/transactions)
+  const [accounts, setAccounts] = useState<Account[]>([]);
+  const [transactions, setTransactions] = useState<Transaction[]>([]);
+  const [storeName, setStoreName] = useState<string>('Dompet Toko');
+  const [isLoading, setIsLoading] = useState<boolean>(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
-  const [transactions, setTransactions] = useState<Transaction[]>(() => {
-    try {
-      const stored = localStorage.getItem(LOCAL_TX_KEY);
-      if (stored) return JSON.parse(stored);
-    } catch (e) {
-      console.error('Failed loading stored transactions:', e);
-    }
-    return INITIAL_TRANSACTIONS;
-  });
-
-  // Store Name state (persisted in localStorage)
-  const [storeName, setStoreName] = useState<string>(() => {
-    try {
-      const saved = localStorage.getItem('dompet_toko_store_name');
-      if (saved && saved.trim()) return saved.trim();
-    } catch {}
-    return 'Dompet Toko';
-  });
-
-  const handleUpdateStoreName = (newName: string) => {
+  const handleUpdateStoreName = async (newName: string): Promise<boolean> => {
     const trimmed = newName.trim() || 'Dompet Toko';
-    setStoreName(trimmed);
     try {
-      localStorage.setItem('dompet_toko_store_name', trimmed);
-    } catch {}
-    showToast(`Nama toko berhasil diubah menjadi "${trimmed}"!`, 'success');
+      await apiSaveSetting('store_name', trimmed);
+      setStoreName(trimmed);
+      showToast(`Nama toko berhasil diubah menjadi "${trimmed}"!`, 'success');
+      return true;
+    } catch (e) {
+      console.error(e);
+      showToast('Gagal menyimpan nama toko. Periksa koneksi lalu coba lagi.', 'error');
+      return false;
+    }
   };
 
   // Dynamic Categories (stored in localStorage, excluding 'Lainnya' / 'lainya')
@@ -88,42 +73,33 @@ export default function App() {
     return lower === '' || lower === '-' || lower === 'lainnya' || lower === 'lainya' || lower === 'lain-lain' || lower === 'lain nya';
   };
 
-  const [categories, setCategories] = useState<string[]>(() => {
-    try {
-      const stored = localStorage.getItem('dompet_pintar_categories');
-      if (stored) {
-        const parsed: string[] = JSON.parse(stored);
-        return parsed.filter(c => !isExcludedCategory(c));
-      }
-    } catch (e) {
-      console.error('Failed loading stored categories:', e);
-    }
-    return INITIAL_CATEGORIES.filter(c => !isExcludedCategory(c));
-  });
+    const [categories, setCategories] = useState<string[]>([]);
 
-  useEffect(() => {
-    localStorage.setItem('dompet_pintar_categories', JSON.stringify(categories));
-  }, [categories]);
-
-  const handleAddCategory = (newCat: string) => {
+  const handleAddCategory = async (newCat: string) => {
     const trimmed = newCat.trim();
     if (!trimmed || isExcludedCategory(trimmed)) return;
-    if (!categories.some(c => c.toLowerCase() === trimmed.toLowerCase())) {
+    if (categories.some(c => c.toLowerCase() === trimmed.toLowerCase())) return;
+    try {
+      await apiAddCategory(trimmed);
       setCategories(prev => [...prev, trimmed]);
       showToast(`Kategori baru "${trimmed}" berhasil ditambahkan!`);
+    } catch (e) {
+      console.error(e);
+      showToast('Gagal menambah kategori. Periksa koneksi lalu coba lagi.', 'error');
     }
   };
 
-  const handleDeleteCategory = (catToDelete: string) => {
-    setCategories(prev => prev.filter(c => c !== catToDelete));
-    // Clear this category from existing transactions so it won't resurrect in any category lists
-    setTransactions(prev => prev.map(t => {
-      if (t.category === catToDelete) {
-        return { ...t, category: '' };
-      }
-      return t;
-    }));
-    showToast(`Kategori "${catToDelete}" telah dihapus.`, 'info');
+  const handleDeleteCategory = async (catToDelete: string) => {
+    try {
+      await apiDeleteCategory(catToDelete);
+      setCategories(prev => prev.filter(c => c !== catToDelete));
+      // Kosongkan kategori ini dari transaksi lama (di database sudah dilakukan server)
+      setTransactions(prev => prev.map(t => (t.category === catToDelete ? { ...t, category: '' } : t)));
+      showToast(`Kategori "${catToDelete}" telah dihapus.`, 'info');
+    } catch (e) {
+      console.error(e);
+      showToast('Gagal menghapus kategori. Periksa koneksi lalu coba lagi.', 'error');
+    }
   };
 
   // 2. Neon Postgres Configuration
@@ -140,20 +116,12 @@ export default function App() {
     dateTo: '',
   });
 
-  // Handler: Add Account (Admin)
-  const handleAddAccount = (newAcc: { name: string; type: 'cash' | 'bank' | 'ewallet'; initialBalance?: number }) => {
+    // Handler: Add Account (Admin)
+  const handleAddAccount = async (newAcc: { name: string; type: 'cash' | 'bank' | 'ewallet'; initialBalance?: number }) => {
     const slug = newAcc.name.toLowerCase().trim().replace(/[^a-z0-9]/g, '_');
     const id = `${slug || 'acc'}_${Date.now().toString(36).slice(-4)}`;
-    const colorMap = {
-      cash: 'emerald',
-      bank: 'sky',
-      ewallet: 'amber',
-    };
-    const iconMap = {
-      cash: 'Wallet',
-      bank: 'Landmark',
-      ewallet: 'Smartphone',
-    };
+    const colorMap = { cash: 'emerald', bank: 'sky', ewallet: 'amber' };
+    const iconMap = { cash: 'Wallet', bank: 'Landmark', ewallet: 'Smartphone' };
     const created: Account = {
       id,
       name: newAcc.name.trim(),
@@ -162,30 +130,55 @@ export default function App() {
       iconName: iconMap[newAcc.type] || 'Wallet',
       initialBalance: newAcc.initialBalance || 0,
     };
-    setAccounts(prev => [...prev, created]);
-    showToast(`Akun "${created.name}" berhasil ditambahkan!`, 'success');
+    try {
+      await apiSaveAccount(created);
+      setAccounts(prev => [...prev, created]);
+      showToast(`Akun "${created.name}" berhasil ditambahkan!`, 'success');
+    } catch (e) {
+      console.error(e);
+      showToast('Gagal menyimpan akun. Periksa koneksi lalu coba lagi.', 'error');
+    }
   };
 
   // Handler: Edit Account (Admin)
-  const handleEditAccount = (id: string, updated: { name: string; type: 'cash' | 'bank' | 'ewallet'; initialBalance?: number }) => {
-    setAccounts(prev => prev.map(a => a.id === id ? { 
-      ...a, 
-      name: updated.name.trim(), 
+  const handleEditAccount = async (id: string, updated: { name: string; type: 'cash' | 'bank' | 'ewallet'; initialBalance?: number }) => {
+    const existing = accounts.find(a => a.id === id);
+    if (!existing) return;
+    const merged: Account = {
+      ...existing,
+      name: updated.name.trim(),
       type: updated.type,
-      initialBalance: updated.initialBalance !== undefined ? updated.initialBalance : a.initialBalance
-    } : a));
-    showToast(`Akun "${updated.name}" berhasil diperbarui!`, 'success');
+      initialBalance: updated.initialBalance !== undefined ? updated.initialBalance : existing.initialBalance,
+    };
+    try {
+      await apiSaveAccount(merged);
+      setAccounts(prev => prev.map(a => (a.id === id ? merged : a)));
+      showToast(`Akun "${merged.name}" berhasil diperbarui!`, 'success');
+    } catch (e) {
+      console.error(e);
+      showToast('Gagal memperbarui akun. Periksa koneksi lalu coba lagi.', 'error');
+    }
   };
 
   // Handler: Delete Account (Admin)
-  const handleDeleteAccount = (id: string) => {
+  const handleDeleteAccount = async (id: string) => {
     if (accounts.length <= 1) {
       showToast('Minimal harus ada 1 akun aktif di sistem.', 'error');
       return;
     }
+    if (transactions.some(t => t.accountId === id || t.transferTargetAccountId === id)) {
+      showToast('Akun tidak bisa dihapus karena masih punya transaksi.', 'error');
+      return;
+    }
     const acc = accounts.find(a => a.id === id);
-    setAccounts(prev => prev.filter(a => a.id !== id));
-    showToast(`Akun "${acc?.name || id}" berhasil dihapus.`, 'info');
+    try {
+      await apiDeleteAccount(id);
+      setAccounts(prev => prev.filter(a => a.id !== id));
+      showToast(`Akun "${acc?.name || id}" berhasil dihapus.`, 'info');
+    } catch (e) {
+      console.error(e);
+      showToast('Gagal menghapus akun. Periksa koneksi lalu coba lagi.', 'error');
+    }
   };
 
   // 4. Modal States
@@ -196,31 +189,30 @@ export default function App() {
   const [isExportImportOpen, setIsExportImportOpen] = useState(false);
   const [editingTransaction, setEditingTransaction] = useState<Transaction | null>(null);
 
-  // 5. Admin Authentication State
-  const [isAdmin, setIsAdmin] = useState<boolean>(() => {
-    try {
-      return sessionStorage.getItem('dompet_is_admin_active') === 'true';
-    } catch {
-      return false;
-    }
-  });
+  // 5. Admin Authentication State (token sesi dari server)
+  const [isAdmin, setIsAdmin] = useState<boolean>(() => Boolean(getAdminToken()));
   const [isAdminModalOpen, setIsAdminModalOpen] = useState(false);
 
   const handleLoginAdminSuccess = () => {
     setIsAdmin(true);
-    try {
-      sessionStorage.setItem('dompet_is_admin_active', 'true');
-    } catch {}
     showToast('Akses Admin Aktif! Fitur hapus data & pengeditan terbuka.', 'success');
   };
 
   const handleLogoutAdmin = () => {
+    clearAdminToken();
     setIsAdmin(false);
-    try {
-      sessionStorage.removeItem('dompet_is_admin_active');
-    } catch {}
     showToast('Mode Kasir aktif. Pengeditan dan penghapusan data dikunci.', 'info');
   };
+
+  // Server menolak token (kedaluwarsa / tidak valid): kembali ke mode Kasir
+  useEffect(() => {
+    const onExpired = () => {
+      setIsAdmin(false);
+      setTimeout(() => showToast('Sesi admin berakhir. Masukkan PIN admin lagi.', 'error'), 100);
+    };
+    window.addEventListener('admin-session-expired', onExpired);
+    return () => window.removeEventListener('admin-session-expired', onExpired);
+  }, []);
 
   const handleOpenExportImport = () => {
     if (!isAdmin) {
@@ -248,55 +240,41 @@ export default function App() {
     setTimeout(() => setToast(null), 3500);
   };
 
-  // Sync state to LocalStorage
-  useEffect(() => {
-    localStorage.setItem(LOCAL_ACC_KEY, JSON.stringify(accounts));
-  }, [accounts]);
+    // Muat semua data dari database
+  const loadAll = async () => {
+    setIsLoading(true);
+    setLoadError(null);
+    try {
+      const data = await apiLoadAll();
 
-  useEffect(() => {
-    localStorage.setItem(LOCAL_TX_KEY, JSON.stringify(transactions));
-  }, [transactions]);
-
-  // Initial remote sync: load from Neon or Vercel serverless API
-  useEffect(() => {
-    let isMounted = true;
-    const fetchRemoteData = async () => {
-      // 1. Direct Neon if connection string is configured
-      if (neonConfig.connectionString && neonConfig.connectionString.trim()) {
-        try {
-          const res = await fetchAllFromNeon(neonConfig.connectionString);
-          if (isMounted && res.success && res.transactions && res.transactions.length > 0) {
-            setTransactions(res.transactions);
-            if (res.accounts && res.accounts.length > 0) {
-              setAccounts(res.accounts);
-            }
-            return;
-          }
-        } catch (e) {
-          console.warn('Neon direct fetch skipped, trying /api/transactions fallback...', e);
-        }
+      // Database masih kosong (pertama kali dipakai): isi data awal
+      let accs = data.accounts;
+      if (accs.length === 0) {
+        accs = INITIAL_ACCOUNTS;
+        await Promise.all(accs.map(a => apiSaveAccount(a)));
       }
 
-      // 2. Vercel Serverless API fallback (reads DATABASE_URL)
-      try {
-        const resp = await fetch('/api/transactions');
-        if (resp.ok) {
-          const json = await resp.json();
-          if (isMounted && json.success && Array.isArray(json.transactions) && json.transactions.length > 0) {
-            setTransactions(json.transactions);
-            if (Array.isArray(json.accounts) && json.accounts.length > 0) {
-              setAccounts(json.accounts);
-            }
-          }
-        }
-      } catch (e) {
-        // Ignore network error in preview
+      let cats = data.categories.filter(c => !isExcludedCategory(c));
+      if (cats.length === 0) {
+        cats = INITIAL_CATEGORIES.filter(c => !isExcludedCategory(c));
+        await Promise.all(cats.map(c => apiAddCategory(c)));
       }
-    };
 
-    fetchRemoteData();
-    return () => { isMounted = false; };
-  }, [neonConfig.connectionString]);
+      setAccounts(accs);
+      setTransactions(data.transactions);
+      setCategories(cats);
+      if (data.storeName && data.storeName.trim()) setStoreName(data.storeName.trim());
+    } catch (e: any) {
+      console.error(e);
+      setLoadError(e.message || 'Gagal memuat data dari database.');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    loadAll();
+  }, []);
 
   // Month-Year dropdown options
   const monthOptions = useMemo(() => {
@@ -376,55 +354,73 @@ export default function App() {
     });
   }, [transactions, filter]);
 
-  // Handler: Add new transactions (from Auto Record or Manual)
-  const handleAddTransactions = (newItems: Omit<Transaction, 'id'>[]) => {
+    const getNextNo = () =>
+    (transactions.length > 0 ? Math.max(...transactions.map(t => t.no || 0)) : 0) + 1;
+
+  // Handler: Add new transactions (from Auto Record)
+  const handleAddTransactions = async (newItems: Omit<Transaction, 'id'>[]) => {
+    const startNo = getNextNo();
     const created: Transaction[] = newItems.map((item, idx) => ({
       ...item,
       id: `tx-${Date.now()}-${idx}`,
-      no: (transactions.length > 0 ? Math.max(...transactions.map(t => t.no || 0)) : 0) + idx + 1,
+      no: startNo + idx,
       createdAt: new Date().toISOString(),
     }));
 
-    setTransactions(prev => [...created, ...prev]);
-    showToast(`Berhasil menambahkan ${created.length} transaksi!`);
-
-    // Auto-sync each transaction to database
-    created.forEach(tx => persistTransactionToDatabase(tx, neonConfig.connectionString).catch(console.error));
+    try {
+      await apiSaveTransactions(created);
+      setTransactions(prev => [...created, ...prev]);
+      showToast(`Berhasil menambahkan ${created.length} transaksi!`);
+    } catch (e) {
+      console.error(e);
+      showToast('Gagal menyimpan transaksi. Periksa koneksi lalu coba lagi.', 'error');
+    }
   };
 
   // Handler: Save single transaction
-  const handleSaveTransaction = (txData: Omit<Transaction, 'id'>) => {
-    const nextNo = (transactions.length > 0 ? Math.max(...transactions.map(t => t.no || 0)) : 0) + 1;
+  const handleSaveTransaction = async (txData: Omit<Transaction, 'id'>): Promise<boolean> => {
     const newTx: Transaction = {
       ...txData,
       id: `tx-${Date.now()}`,
-      no: nextNo,
+      no: getNextNo(),
       createdAt: new Date().toISOString(),
     };
-    setTransactions(prev => [newTx, ...prev]);
-    persistTransactionToDatabase(newTx, neonConfig.connectionString).catch(console.error);
-    showToast(`Transaksi "${newTx.description}" (${formatRupiah(newTx.amount)}) berhasil disimpan!`);
+    try {
+      await apiSaveTransaction(newTx);
+      setTransactions(prev => [newTx, ...prev]);
+      showToast(`Transaksi "${newTx.description}" (${formatRupiah(newTx.amount)}) berhasil disimpan!`);
+      return true;
+    } catch (e) {
+      console.error(e);
+      showToast('Gagal menyimpan transaksi. Periksa koneksi lalu coba lagi.', 'error');
+      return false;
+    }
   };
 
   // Handler: Edit / Update existing transaction (Admin)
-  const handleEditTransaction = (updatedTx: Transaction) => {
-    setTransactions(prev => prev.map(t => t.id === updatedTx.id ? updatedTx : t));
-    persistTransactionToDatabase(updatedTx, neonConfig.connectionString).catch(console.error);
-    showToast(`Transaksi "${updatedTx.description}" berhasil diperbarui!`, 'success');
+  const handleEditTransaction = async (updatedTx: Transaction) => {
+    try {
+      await apiSaveTransaction(updatedTx);
+      setTransactions(prev => prev.map(t => (t.id === updatedTx.id ? updatedTx : t)));
+      showToast(`Transaksi "${updatedTx.description}" berhasil diperbarui!`, 'success');
+    } catch (e) {
+      console.error(e);
+      showToast('Gagal memperbarui transaksi. Periksa koneksi lalu coba lagi.', 'error');
+    }
   };
 
   // Handler: Pindah Saldo / Transfer Antar Dompet
-  const handleTransfer = (
+  const handleTransfer = async (
     fromAccId: string,
     toAccId: string,
     amount: number,
     date: string,
     notes: string
-  ) => {
+  ): Promise<boolean> => {
     const fromName = accounts.find(a => a.id === fromAccId)?.name || fromAccId;
     const toName = accounts.find(a => a.id === toAccId)?.name || toAccId;
 
-    const baseNo = (transactions.length > 0 ? Math.max(...transactions.map(t => t.no || 0)) : 0) + 1;
+    const baseNo = getNextNo();
     const transferId = `tf-${Date.now()}`;
 
     const txKeluar: Transaction = {
@@ -452,18 +448,24 @@ export default function App() {
       createdAt: new Date().toISOString(),
     };
 
-    setTransactions(prev => [txMasuk, txKeluar, ...prev]);
-    persistTransactionToDatabase(txMasuk, neonConfig.connectionString).catch(console.error);
-    persistTransactionToDatabase(txKeluar, neonConfig.connectionString).catch(console.error);
-    showToast(`Pindah saldo ${formatRupiah(amount)} dari ${fromName} ke ${toName} berhasil!`);
+    try {
+      await apiSaveTransactions([txMasuk, txKeluar]);
+      setTransactions(prev => [txMasuk, txKeluar, ...prev]);
+      showToast(`Pindah saldo ${formatRupiah(amount)} dari ${fromName} ke ${toName} berhasil!`);
+      return true;
+    } catch (e) {
+      console.error(e);
+      showToast('Gagal memindahkan saldo. Periksa koneksi lalu coba lagi.', 'error');
+      return false;
+    }
   };
 
   // Handler: Batalkan transaksi terakhir (Undo last)
-  const handleUndoLast = () => {
+  const handleUndoLast = async () => {
     if (transactions.length === 0) return;
     const lastTx = transactions[0];
 
-    let idsToRemove = [lastTx.id];
+    const idsToRemove = [lastTx.id];
     if (lastTx.description.startsWith('Pindah') && transactions.length > 1) {
       const secondTx = transactions[1];
       if (secondTx.description.startsWith('Pindah') && secondTx.amount === lastTx.amount && secondTx.date === lastTx.date) {
@@ -471,20 +473,53 @@ export default function App() {
       }
     }
 
-    setTransactions(prev => prev.filter(t => !idsToRemove.includes(t.id)));
-    idsToRemove.forEach(id => removeTransactionFromDatabase(id, neonConfig.connectionString).catch(console.error));
-    showToast(`Transaksi terakhir "${lastTx.description}" (${formatRupiah(lastTx.amount)}) dibatalkan.`, 'info');
+    try {
+      await Promise.all(idsToRemove.map(id => apiDeleteTransaction(id)));
+      setTransactions(prev => prev.filter(t => !idsToRemove.includes(t.id)));
+      showToast(`Transaksi terakhir "${lastTx.description}" (${formatRupiah(lastTx.amount)}) dibatalkan.`, 'info');
+    } catch (e) {
+      console.error(e);
+      showToast('Gagal membatalkan transaksi. Periksa koneksi lalu coba lagi.', 'error');
+    }
   };
 
   // Handler: Delete transaction
-  const handleDeleteTransaction = (id: string) => {
+  const handleDeleteTransaction = async (id: string) => {
     const target = transactions.find(t => t.id === id);
-    if (confirm(`Hapus transaksi "${target?.description || ''}"?`)) {
+    if (!confirm(`Hapus transaksi "${target?.description || ''}"?`)) return;
+    try {
+      await apiDeleteTransaction(id);
       setTransactions(prev => prev.filter(t => t.id !== id));
-      removeTransactionFromDatabase(id, neonConfig.connectionString).catch(console.error);
       showToast('Transaksi telah dihapus.', 'info');
+    } catch (e) {
+      console.error(e);
+      showToast('Gagal menghapus transaksi. Periksa koneksi lalu coba lagi.', 'error');
     }
   };
+
+  if (isLoading) {
+    return (
+      <div className="min-h-screen bg-slate-100/90 flex items-center justify-center text-sm font-semibold text-slate-500">
+        Memuat data...
+      </div>
+    );
+  }
+
+  if (loadError) {
+    return (
+      <div className="min-h-screen bg-slate-100/90 flex flex-col items-center justify-center gap-3 px-6 text-center">
+        <p className="text-sm font-semibold text-rose-700">Gagal memuat data dari database.</p>
+        <p className="text-xs text-slate-500 break-words max-w-xs">{loadError}</p>
+        <button
+          type="button"
+          onClick={loadAll}
+          className="px-4 py-2 rounded-lg bg-[#1e3a5f] hover:bg-[#162c47] text-white text-xs font-bold cursor-pointer"
+        >
+          Coba Lagi
+        </button>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-slate-100/90 text-slate-800 flex flex-col antialiased selection:bg-emerald-600 selection:text-white">
@@ -529,7 +564,6 @@ export default function App() {
           onOpenAdminModal={() => setIsAdminModalOpen(true)}
           onLogoutAdmin={handleLogoutAdmin}
           storeName={storeName}
-          onUpdateStoreName={handleUpdateStoreName}
         />
       </main>
 
@@ -574,9 +608,15 @@ export default function App() {
         transactions={transactions}
         filteredTransactions={filteredTransactions}
         accounts={accounts}
-        onImportTransactions={(imported) => {
-          setTransactions(prev => [...imported, ...prev]);
-          showToast(`${imported.length} transaksi berhasil diimpor!`);
+        onImportTransactions={async (imported) => {
+          try {
+            await apiSaveTransactions(imported);
+            setTransactions(prev => [...imported, ...prev]);
+            showToast(`${imported.length} transaksi berhasil diimpor!`);
+          } catch (e) {
+            console.error(e);
+            showToast('Gagal mengimpor transaksi ke database.', 'error');
+          }
         }}
       />
 

@@ -41,6 +41,21 @@ async function ensureTables(sql: any) {
       CREATE INDEX IF NOT EXISTS idx_transactions_account ON transactions (account_id);
     `;
 
+    await sql`
+      CREATE TABLE IF NOT EXISTS settings (
+        key VARCHAR(50) PRIMARY KEY,
+        value TEXT NOT NULL,
+        updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+      );
+    `;
+
+    await sql`
+      CREATE TABLE IF NOT EXISTS categories (
+        name VARCHAR(50) PRIMARY KEY,
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+      );
+    `;
+
     isInitialized = true;
   } catch (e) {
     console.error('Error ensuring tables in Neon:', e);
@@ -72,6 +87,14 @@ export default async function handler(req: any, res: any) {
   try {
     // 1. GET: Fetch transactions and accounts
     if (req.method === 'GET') {
+      // Ambil 1 pengaturan (mis. nama toko)
+      if (req.query.entity === 'setting') {
+        const rows = await sql`SELECT value FROM settings WHERE key = ${req.query.key} LIMIT 1`;
+        return res.status(200).json({
+          success: true,
+          value: rows.length > 0 ? rows[0].value : null,
+        });
+      }
       const txRows = await sql`
         SELECT 
           id, 
@@ -98,11 +121,16 @@ export default async function handler(req: any, res: any) {
           ORDER BY id ASC
         `;
       } catch (e) {
-        console.warn('Accounts table fetch warning:', e);
+        throw e;
       }
+
+      const catRows = await sql`SELECT name FROM categories ORDER BY created_at ASC, name ASC`;
+      const nameRows = await sql`SELECT value FROM settings WHERE key = 'store_name' LIMIT 1`;
 
       return res.status(200).json({
         success: true,
+        categories: catRows.map((c: any) => c.name),
+        storeName: nameRows.length > 0 ? nameRows[0].value : null,
         transactions: txRows.map((r: any) => ({
           ...r,
           amount: Number(r.amount) || 0,
@@ -117,6 +145,81 @@ export default async function handler(req: any, res: any) {
 
     // 2. POST / PUT: Insert or Update transaction
     if (req.method === 'POST' || req.method === 'PUT') {
+      // Auth: login or change_pin
+      if (req.body.entity === 'auth') {
+        const { action, pin, currentPin, newPin } = req.body;
+        const pinRows = await sql`SELECT value FROM settings WHERE key = 'admin_pin' LIMIT 1;`;
+        const storedPin = pinRows.length > 0 ? pinRows[0].value : '1234';
+
+        if (action === 'login') {
+          if (pin === storedPin) {
+            const expiry = Date.now() + 24 * 3600 * 1000;
+            const token = `${expiry}.sig_${Math.random().toString(36).slice(2, 10)}`;
+            return res.status(200).json({ success: true, token });
+          } else {
+            return res.status(401).json({ error: 'PIN Admin salah.' });
+          }
+        }
+
+        if (action === 'change_pin') {
+          if (currentPin !== storedPin) {
+            return res.status(400).json({ error: 'PIN lama salah.' });
+          }
+          if (!newPin || newPin.length < 4) {
+            return res.status(400).json({ error: 'PIN baru minimal 4 digit.' });
+          }
+          await sql`
+            INSERT INTO settings (key, value, updated_at)
+            VALUES ('admin_pin', ${newPin}, CURRENT_TIMESTAMP)
+            ON CONFLICT (key) DO UPDATE SET
+              value = EXCLUDED.value,
+              updated_at = CURRENT_TIMESTAMP;
+          `;
+          return res.status(200).json({ success: true });
+        }
+      }
+
+      // Tambah 1 kategori
+      if (req.body.entity === 'category' && req.body.name) {
+        await sql`
+          INSERT INTO categories (name) VALUES (${String(req.body.name).trim()})
+          ON CONFLICT (name) DO NOTHING;
+        `;
+        return res.status(200).json({ success: true, name: req.body.name });
+      }
+
+      // Upsert 1 pengaturan
+      if (req.body.entity === 'setting' && req.body.key) {
+        const { key, value } = req.body;
+        await sql`
+          INSERT INTO settings (key, value, updated_at)
+          VALUES (${key}, ${String(value ?? '')}, CURRENT_TIMESTAMP)
+          ON CONFLICT (key) DO UPDATE SET
+            value = EXCLUDED.value,
+            updated_at = CURRENT_TIMESTAMP;
+        `;
+        return res.status(200).json({ success: true, key });
+      }
+
+      // Upsert 1 akun
+      if (req.body.entity === 'account' && req.body.account) {
+        const acc = req.body.account;
+        if (!acc.id || !acc.name || !acc.type) {
+          return res.status(400).json({ error: 'Missing required fields: id, name, type.' });
+        }
+        await sql`
+          INSERT INTO accounts (id, name, type, color, icon_name, initial_balance)
+          VALUES (${acc.id}, ${acc.name}, ${acc.type}, ${acc.color || '#0284c7'}, ${acc.iconName || 'Wallet'}, ${Number(acc.initialBalance) || 0})
+          ON CONFLICT (id) DO UPDATE SET
+            name = EXCLUDED.name,
+            type = EXCLUDED.type,
+            color = EXCLUDED.color,
+            icon_name = EXCLUDED.icon_name,
+            initial_balance = EXCLUDED.initial_balance;
+        `;
+        return res.status(200).json({ success: true, id: acc.id });
+      }
+
       // Check if batch sync of all transactions
       if (req.body.batch && Array.isArray(req.body.transactions)) {
         const { transactions: batchTx, accounts: batchAcc } = req.body;
@@ -215,7 +318,25 @@ export default async function handler(req: any, res: any) {
 
     // 3. DELETE: Delete single transaction or all
     if (req.method === 'DELETE') {
-      const { id, clearAll } = req.query;
+      const { id, clearAll, entity } = req.query;
+
+      if (entity === 'category') {
+        const catName = req.query.name;
+        if (!catName) {
+          return res.status(400).json({ error: 'Missing category name.' });
+        }
+        await sql`UPDATE transactions SET category = '' WHERE category = ${catName};`;
+        await sql`DELETE FROM categories WHERE name = ${catName};`;
+        return res.status(200).json({ success: true, deletedName: catName });
+      }
+
+      if (entity === 'account') {
+        if (!id) {
+          return res.status(400).json({ error: 'Missing account id.' });
+        }
+        await sql`DELETE FROM accounts WHERE id = ${id};`;
+        return res.status(200).json({ success: true, deletedId: id });
+      }
 
       if (clearAll === 'true') {
         await sql`DELETE FROM transactions;`;

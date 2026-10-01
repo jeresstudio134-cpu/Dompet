@@ -334,3 +334,144 @@ export const removeTransactionFromDatabase = async (
     console.warn('API delete error:', err);
   }
 };
+
+// Simpan 1 akun (insert / update) ke Neon langsung atau lewat /api/transactions
+export const persistAccountToDatabase = async (
+  acc: Account,
+  connectionString?: string
+): Promise<void> => {
+  // 1. Direct Neon driver
+  if (connectionString && connectionString.trim()) {
+    try {
+      const sql = neon(connectionString.trim());
+      await sql`
+        INSERT INTO accounts (id, name, type, color, icon_name, initial_balance)
+        VALUES (${acc.id}, ${acc.name}, ${acc.type}, ${acc.color || '#0284c7'}, ${acc.iconName || 'Wallet'}, ${acc.initialBalance || 0})
+        ON CONFLICT (id) DO UPDATE SET
+          name = EXCLUDED.name,
+          type = EXCLUDED.type,
+          color = EXCLUDED.color,
+          icon_name = EXCLUDED.icon_name,
+          initial_balance = EXCLUDED.initial_balance;
+      `;
+      return;
+    } catch (err) {
+      console.warn('Direct Neon account persist error, falling back to /api/transactions...', err);
+    }
+  }
+
+  // 2. Vercel API fallback
+  try {
+    await fetch('/api/transactions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ entity: 'account', account: acc }),
+    });
+  } catch (err) {
+    console.warn('API account persist error:', err);
+  }
+};
+
+// Hapus 1 akun dari Neon langsung atau lewat /api/transactions
+export const removeAccountFromDatabase = async (
+  id: string,
+  connectionString?: string
+): Promise<void> => {
+  // 1. Direct Neon driver
+  if (connectionString && connectionString.trim()) {
+    try {
+      const sql = neon(connectionString.trim());
+      await sql`DELETE FROM accounts WHERE id = ${id};`;
+      return;
+    } catch (err) {
+      console.warn('Direct Neon account delete error, falling back to /api/transactions...', err);
+    }
+  }
+
+  // 2. Vercel API fallback
+  try {
+    await fetch(`/api/transactions?entity=account&id=${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+    });
+  } catch (err) {
+    console.warn('API account delete error:', err);
+  }
+};
+
+
+// Pastikan tabel settings ada (aman dipanggil berulang)
+const ensureSettingsTable = async (sql: any) => {
+  await sql`
+    CREATE TABLE IF NOT EXISTS settings (
+      key VARCHAR(50) PRIMARY KEY,
+      value TEXT NOT NULL,
+      updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+    );
+  `;
+};
+
+// Simpan 1 pengaturan (mis. nama toko) ke Neon langsung atau lewat /api/transactions
+export const persistSettingToDatabase = async (
+  key: string,
+  value: string,
+  connectionString?: string
+): Promise<void> => {
+  // 1. Direct Neon driver
+  if (connectionString && connectionString.trim()) {
+    try {
+      const sql = neon(connectionString.trim());
+      await ensureSettingsTable(sql);
+      await sql`
+        INSERT INTO settings (key, value, updated_at)
+        VALUES (${key}, ${value}, CURRENT_TIMESTAMP)
+        ON CONFLICT (key) DO UPDATE SET
+          value = EXCLUDED.value,
+          updated_at = CURRENT_TIMESTAMP;
+      `;
+      return;
+    } catch (err) {
+      console.warn('Direct Neon setting persist error, falling back to /api/transactions...', err);
+    }
+  }
+
+  // 2. Vercel API fallback
+  try {
+    await fetch('/api/transactions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ entity: 'setting', key, value }),
+    });
+  } catch (err) {
+    console.warn('API setting persist error:', err);
+  }
+};
+
+// Ambil 1 pengaturan dari database. Mengembalikan null jika belum ada / gagal.
+export const fetchSettingFromDatabase = async (
+  key: string,
+  connectionString?: string
+): Promise<string | null> => {
+  // 1. Direct Neon driver
+  if (connectionString && connectionString.trim()) {
+    try {
+      const sql = neon(connectionString.trim());
+      await ensureSettingsTable(sql);
+      const rows = await sql`SELECT value FROM settings WHERE key = ${key} LIMIT 1;`;
+      return rows.length > 0 ? (rows[0].value as string) : null;
+    } catch (err) {
+      console.warn('Direct Neon setting fetch error, falling back to /api/transactions...', err);
+    }
+  }
+
+  // 2. Vercel API fallback
+  try {
+    const resp = await fetch(`/api/transactions?entity=setting&key=${encodeURIComponent(key)}`);
+    if (resp.ok) {
+      const json = await resp.json();
+      if (json.success && typeof json.value === 'string') return json.value;
+    }
+  } catch (err) {
+    console.warn('API setting fetch error:', err);
+  }
+  return null;
+};

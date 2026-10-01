@@ -30,8 +30,8 @@ interface DompetTokoViewProps {
   transactions: Transaction[];
   stats: MonthlyStats;
   neonConfig: NeonConfig;
-  onAddTransaction: (tx: Omit<Transaction, 'id'>) => void;
-  onTransfer: (fromAcc: string, toAcc: string, amount: number, date: string, notes: string) => void;
+  onAddTransaction: (tx: Omit<Transaction, 'id'>) => Promise<boolean> | void;
+  onTransfer: (fromAcc: string, toAcc: string, amount: number, date: string, notes: string) => Promise<boolean> | void;
   onUndoLast: () => void;
   onDeleteTransaction: (id: string) => void;
   onEditTransaction: (tx: Transaction) => void;
@@ -48,7 +48,6 @@ interface DompetTokoViewProps {
   onOpenAdminModal: () => void;
   onLogoutAdmin: () => void;
   storeName?: string;
-  onUpdateStoreName?: (newName: string) => void;
 }
 
 export const DompetTokoView: React.FC<DompetTokoViewProps> = ({
@@ -74,11 +73,8 @@ export const DompetTokoView: React.FC<DompetTokoViewProps> = ({
   onOpenAdminModal,
   onLogoutAdmin,
   storeName,
-  onUpdateStoreName,
 }) => {
   const currentStoreName = storeName || 'Dompet Toko';
-  const [isEditingStoreName, setIsEditingStoreName] = useState(false);
-  const [tempStoreName, setTempStoreName] = useState(currentStoreName);
 
   // Tabs: 'catat' | 'pindah' | 'filter'
   const [activeTab, setActiveTab] = useState<'catat' | 'pindah' | 'filter'>('catat');
@@ -210,12 +206,12 @@ export const DompetTokoView: React.FC<DompetTokoViewProps> = ({
   };
 
   // Submit 'Catat'
-  const handleSimpan = (e: React.FormEvent) => {
+  const handleSimpan = async (e: React.FormEvent) => {
     e.preventDefault();
     const amount = parseRupiahInput(nominalStr);
     if (!keterangan.trim() || amount <= 0) return;
 
-    onAddTransaction({
+    const ok = await onAddTransaction({
       date: tanggal,
       description: keterangan.trim(),
       accountId: selectedAkun,
@@ -224,6 +220,7 @@ export const DompetTokoView: React.FC<DompetTokoViewProps> = ({
       amount,
     });
 
+    if (ok === false) return;
     confetti({ particleCount: 30, spread: 50, origin: { y: 0.7 } });
     setKeterangan('');
     setNominalStr('0');
@@ -231,12 +228,12 @@ export const DompetTokoView: React.FC<DompetTokoViewProps> = ({
   };
 
   // Submit 'Pindah Saldo'
-  const handlePindahSaldo = (e: React.FormEvent) => {
+  const handlePindahSaldo = async (e: React.FormEvent) => {
     e.preventDefault();
     const amount = parseRupiahInput(transferNominalStr);
     if (amount <= 0 || transferDari === transferKe) return;
 
-    onTransfer(
+    const ok = await onTransfer(
       transferDari, 
       transferKe, 
       amount, 
@@ -244,6 +241,7 @@ export const DompetTokoView: React.FC<DompetTokoViewProps> = ({
       transferKeterangan.trim() || 'Pindah'
     );
 
+    if (ok === false) return;
     confetti({ particleCount: 35, spread: 60, origin: { y: 0.7 } });
     setTransferNominalStr('0');
     setTransferKeterangan('');
@@ -349,62 +347,9 @@ export const DompetTokoView: React.FC<DompetTokoViewProps> = ({
       {/* Title & Header Toolbar */}
       <div className="flex items-center justify-between pt-1 pb-0.5">
         <div className="flex items-center gap-2">
-          {isEditingStoreName ? (
-            <form 
-              onSubmit={(e) => {
-                e.preventDefault();
-                if (onUpdateStoreName) {
-                  onUpdateStoreName(tempStoreName);
-                }
-                setIsEditingStoreName(false);
-              }}
-              className="flex items-center gap-1.5"
-            >
-              <input
-                type="text"
-                value={tempStoreName}
-                onChange={(e) => setTempStoreName(e.target.value)}
-                placeholder="Nama Toko..."
-                autoFocus
-                className="text-base sm:text-lg font-extrabold text-[#1e3a5f] bg-white border border-[#1e3a5f]/40 rounded-lg px-2 py-0.5 focus:outline-none focus:ring-2 focus:ring-[#1e3a5f]"
-              />
-              <button
-                type="submit"
-                className="p-1 rounded-md bg-emerald-600 text-white hover:bg-emerald-700 transition cursor-pointer"
-                title="Simpan Nama Toko"
-              >
-                <Check className="w-3.5 h-3.5" />
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setTempStoreName(currentStoreName);
-                  setIsEditingStoreName(false);
-                }}
-                className="p-1 rounded-md bg-slate-200 text-slate-600 hover:bg-slate-300 transition cursor-pointer"
-                title="Batal"
-              >
-                <X className="w-3.5 h-3.5" />
-              </button>
-            </form>
-          ) : (
-            <div className="flex items-center gap-1.5 group">
-              <h1 className="text-xl font-extrabold text-[#1e3a5f] tracking-tight">
-                {currentStoreName}
-              </h1>
-              <button
-                type="button"
-                onClick={() => {
-                  setTempStoreName(currentStoreName);
-                  setIsEditingStoreName(true);
-                }}
-                className="p-1 rounded-lg text-slate-400 hover:text-[#1e3a5f] hover:bg-slate-100 transition cursor-pointer"
-                title="Ubah Nama Toko"
-              >
-                <Edit2 className="w-3.5 h-3.5" />
-              </button>
-            </div>
-          )}
+                    <h1 className="text-xl font-extrabold text-[#1e3a5f] tracking-tight">
+            {currentStoreName}
+          </h1>
           
           {/* Admin / Kasir Mode Toggle Badge */}
           <button
