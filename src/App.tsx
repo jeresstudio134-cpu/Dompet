@@ -51,6 +51,7 @@ export default function App() {
   const [storeName, setStoreName] = useState<string>('Dompet Toko');
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [loadSlow, setLoadSlow] = useState<boolean>(false);
 
   const handleUpdateStoreName = async (newName: string): Promise<boolean> => {
     const trimmed = newName.trim() || 'Dompet Toko';
@@ -244,6 +245,7 @@ export default function App() {
   const loadAll = async () => {
     setIsLoading(true);
     setLoadError(null);
+    const slowTimer = setTimeout(() => setLoadSlow(true), 5000);
     try {
       const data = await apiLoadAll();
 
@@ -268,6 +270,8 @@ export default function App() {
       console.error(e);
       setLoadError(e.message || 'Gagal memuat data dari database.');
     } finally {
+      clearTimeout(slowTimer);
+      setLoadSlow(false);
       setIsLoading(false);
     }
   };
@@ -502,7 +506,14 @@ export default function App() {
   if (isLoading) {
     return (
       <div className="min-h-screen bg-slate-100/90 flex items-center justify-center text-sm font-semibold text-slate-500">
-        Memuat data...
+        <div className="text-center space-y-1">
+          <p>Memuat data...</p>
+          {loadSlow && (
+            <p className="text-xs font-normal text-slate-400">
+              Server sedang bangun setelah lama tidak dipakai. Mohon tunggu sebentar.
+            </p>
+          )}
+        </div>
       </div>
     );
   }

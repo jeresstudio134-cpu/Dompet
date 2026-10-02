@@ -57,56 +57,54 @@ let isInitialized = false;
 async function ensureTables(sql: any) {
   if (isInitialized) return;
   try {
-    await sql`
-      CREATE TABLE IF NOT EXISTS accounts (
-        id VARCHAR(50) PRIMARY KEY,
-        name VARCHAR(100) NOT NULL,
-        type VARCHAR(20) NOT NULL,
-        color VARCHAR(20) DEFAULT '#0284c7',
-        icon_name VARCHAR(50) DEFAULT 'Wallet',
-        initial_balance BIGINT DEFAULT 0,
-        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-      );
-    `;
+    // Semua tabel dibuat bersamaan agar cold start tidak lama
+    await Promise.all([
+      sql`
+        CREATE TABLE IF NOT EXISTS accounts (
+          id VARCHAR(50) PRIMARY KEY,
+          name VARCHAR(100) NOT NULL,
+          type VARCHAR(20) NOT NULL,
+          color VARCHAR(20) DEFAULT '#0284c7',
+          icon_name VARCHAR(50) DEFAULT 'Wallet',
+          initial_balance BIGINT DEFAULT 0,
+          created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+        );
+      `,
+      sql`
+        CREATE TABLE IF NOT EXISTS transactions (
+          id VARCHAR(64) PRIMARY KEY,
+          no INTEGER,
+          date DATE NOT NULL,
+          description VARCHAR(255) NOT NULL,
+          account_id VARCHAR(50),
+          type VARCHAR(10) NOT NULL,
+          category VARCHAR(50) NOT NULL,
+          amount BIGINT NOT NULL,
+          notes TEXT,
+          transfer_target_account_id VARCHAR(50),
+          linked_transaction_id VARCHAR(64),
+          created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+        );
+      `,
+      sql`
+        CREATE TABLE IF NOT EXISTS settings (
+          key VARCHAR(50) PRIMARY KEY,
+          value TEXT NOT NULL,
+          updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+        );
+      `,
+      sql`
+        CREATE TABLE IF NOT EXISTS categories (
+          name VARCHAR(50) PRIMARY KEY,
+          created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+        );
+      `,
+    ]);
 
-    await sql`
-      CREATE TABLE IF NOT EXISTS transactions (
-        id VARCHAR(64) PRIMARY KEY,
-        no INTEGER,
-        date DATE NOT NULL,
-        description VARCHAR(255) NOT NULL,
-        account_id VARCHAR(50),
-        type VARCHAR(10) NOT NULL,
-        category VARCHAR(50) NOT NULL,
-        amount BIGINT NOT NULL,
-        notes TEXT,
-        transfer_target_account_id VARCHAR(50),
-        linked_transaction_id VARCHAR(64),
-        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-      );
-    `;
-
-    await sql`
-      CREATE INDEX IF NOT EXISTS idx_transactions_date ON transactions (date);
-    `;
-    await sql`
-      CREATE INDEX IF NOT EXISTS idx_transactions_account ON transactions (account_id);
-    `;
-
-    await sql`
-      CREATE TABLE IF NOT EXISTS settings (
-        key VARCHAR(50) PRIMARY KEY,
-        value TEXT NOT NULL,
-        updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-      );
-    `;
-
-    await sql`
-      CREATE TABLE IF NOT EXISTS categories (
-        name VARCHAR(50) PRIMARY KEY,
-        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-      );
-    `;
+    await Promise.all([
+      sql`CREATE INDEX IF NOT EXISTS idx_transactions_date ON transactions (date);`,
+      sql`CREATE INDEX IF NOT EXISTS idx_transactions_account ON transactions (account_id);`,
+    ]);
 
     isInitialized = true;
   } catch (e) {
@@ -138,46 +136,33 @@ export default async function handler(req: any, res: any) {
 
   try {
     // 1. GET: Fetch transactions and accounts
-    if (req.method === 'GET') {
-      // Ambil 1 pengaturan (mis. nama toko)
-      if (req.query.entity === 'setting') {
-        const rows = await sql`SELECT value FROM settings WHERE key = ${req.query.key} LIMIT 1`;
-        return res.status(200).json({
-          success: true,
-          value: rows.length > 0 ? rows[0].value : null,
-        });
-      }
-      const txRows = await sql`
-        SELECT 
-          id, 
-          no, 
-          to_char(date, 'YYYY-MM-DD') as date, 
-          description, 
-          account_id as "accountId", 
-          type, 
-          category, 
-          amount, 
-          notes, 
-          transfer_target_account_id as "transferTargetAccountId", 
-          linked_transaction_id as "linkedTransactionId", 
-          created_at as "createdAt"
-        FROM transactions 
-        ORDER BY date DESC, no DESC NULLS LAST, id DESC
-      `;
-
-      let accRows: any[] = [];
-      try {
-        accRows = await sql`
+        if (req.method === 'GET') {
+      const [txRows, accRows, catRows, nameRows] = await Promise.all([
+        sql`
+          SELECT 
+            id, 
+            no, 
+            to_char(date, 'YYYY-MM-DD') as date, 
+            description, 
+            account_id as "accountId", 
+            type, 
+            category, 
+            amount, 
+            notes, 
+            transfer_target_account_id as "transferTargetAccountId", 
+            linked_transaction_id as "linkedTransactionId", 
+            created_at as "createdAt"
+          FROM transactions 
+          ORDER BY date DESC, no DESC NULLS LAST, id DESC
+        `,
+        sql`
           SELECT id, name, type, color, icon_name as "iconName", initial_balance as "initialBalance"
           FROM accounts
           ORDER BY id ASC
-        `;
-      } catch (e) {
-        throw e;
-      }
-
-      const catRows = await sql`SELECT name FROM categories ORDER BY created_at ASC, name ASC`;
-      const nameRows = await sql`SELECT value FROM settings WHERE key = 'store_name' LIMIT 1`;
+        `,
+        sql`SELECT name FROM categories ORDER BY created_at ASC, name ASC`,
+        sql`SELECT value FROM settings WHERE key = 'store_name' LIMIT 1`,
+      ]);
 
       return res.status(200).json({
         success: true,
