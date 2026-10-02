@@ -1,9 +1,94 @@
 import { neon } from '@neondatabase/serverless';
-import { GoogleGenAI } from '@google/genai';
+import { createHmac, randomBytes, scryptSync, timingSafeEqual } from 'crypto';
 
 export const config = { maxDuration: 60 }; // Gemini bisa butuh >10 detik untuk foto
 
-const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
+const DEFAULT_PIN = '1234'; // dipakai sampai admin mengganti PIN
+const PUBLIC_SETTINGS = ['store_name']; // hanya key ini yang boleh ditulis lewat entity "setting"
+const TOKEN_TTL_MS = 12 * 60 * 60 * 1000; // sesi admin 12 jam
+const MAX_FAILS = 5;
+const LOCK_MS = 5 * 60 * 1000;
+const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-3.8-flash';
+
+// ---------- Keamanan: token admin & PIN ----------
+
+const getSecret = () =>
+  process.env.AUTH_SECRET || process.env.DATABASE_URL || process.env.NEON_DATABASE_URL || '';
+
+function signToken(): string {
+  const expiry = String(Date.now() + TOKEN_TTL_MS);
+  const sig = createHmac('sha256', getSecret()).update(expiry).digest('hex');
+  return `${expiry}.${sig}`;
+}
+
+function verifyToken(token?: string): boolean {
+  if (!token || !getSecret()) return false;
+  const [expiry, sig] = token.split('.');
+  if (!expiry || !sig) return false;
+  const expected = createHmac('sha256', getSecret()).update(expiry).digest('hex');
+  const a = Buffer.from(sig);
+  const b = Buffer.from(expected);
+  if (a.length !== b.length || !timingSafeEqual(a, b)) return false;
+  return Number(expiry) > Date.now();
+}
+
+function hashPin(pin: string, salt: string): string {
+  return scryptSync(pin, salt, 32).toString('hex');
+}
+
+async function verifyPin(sql: any, pin: string): Promise<boolean> {
+  const rows = await sql`SELECT value FROM settings WHERE key = 'admin_pin' LIMIT 1`;
+  if (rows.length === 0) return pin === DEFAULT_PIN;
+  const [salt, hash] = String(rows[0].value).split(':');
+  const a = Buffer.from(hashPin(pin, salt));
+  const b = Buffer.from(hash);
+  return a.length === b.length && timingSafeEqual(a, b);
+}
+
+async function savePin(sql: any, pin: string) {
+  const salt = randomBytes(16).toString('hex');
+  const value = `${salt}:${hashPin(pin, salt)}`;
+  await sql`
+    INSERT INTO settings (key, value, updated_at) VALUES ('admin_pin', ${value}, CURRENT_TIMESTAMP)
+    ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = CURRENT_TIMESTAMP;
+  `;
+  await sql`
+    INSERT INTO settings (key, value, updated_at) VALUES ('admin_pin_len', ${String(pin.length)}, CURRENT_TIMESTAMP)
+    ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = CURRENT_TIMESTAMP;
+  `;
+}
+
+// Pembatasan percobaan login: 5 kali salah = terkunci 5 menit. Mengembalikan sisa menit (0 = tidak terkunci)
+async function getLoginLock(sql: any): Promise<number> {
+  const rows = await sql`SELECT value FROM settings WHERE key = 'login_fail' LIMIT 1`;
+  if (rows.length === 0) return 0;
+  const [count, ts] = String(rows[0].value).split(':').map(Number);
+  if (count >= MAX_FAILS) {
+    const remaining = ts + LOCK_MS - Date.now();
+    if (remaining > 0) return Math.ceil(remaining / 60000);
+  }
+  return 0;
+}
+
+async function registerLoginFail(sql: any) {
+  const rows = await sql`SELECT value FROM settings WHERE key = 'login_fail' LIMIT 1`;
+  let count = 0;
+  if (rows.length > 0) {
+    const [c, ts] = String(rows[0].value).split(':').map(Number);
+    count = Date.now() - ts > LOCK_MS ? 0 : c;
+  }
+  const value = `${count + 1}:${Date.now()}`;
+  await sql`
+    INSERT INTO settings (key, value, updated_at) VALUES ('login_fail', ${value}, CURRENT_TIMESTAMP)
+    ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = CURRENT_TIMESTAMP;
+  `;
+}
+
+async function clearLoginFail(sql: any) {
+  await sql`DELETE FROM settings WHERE key = 'login_fail'`;
+}
+
+// ---------- AI: prompt Gemini ----------
 
 // Kebiasaan pencatatan (dipakai hanya jika kategorinya memang ada di database)
 const CATEGORY_HINTS: { category: string; examples: string }[] = [
@@ -25,7 +110,7 @@ function buildAiPrompt(accounts: any[], categories: string[], today: string, has
     .join('\n');
 
   return [
-    `Kamu adalah asisten pembukuan toko kecil di Indonesia. Ubah ${hasImage ? 'foto struk/nota dan/atau teks' : 'teks'} yang diberikan menjadi daftar transaksi keuangan.`,
+    `Kamu adalah asisten pembukuan toko kecil di Indonesia. Ubah ${hasImage ? 'foto struk/nota/catatan dan/atau teks' : 'teks'} yang diberikan menjadi daftar transaksi keuangan.`,
     '',
     `Tanggal hari ini: ${today} (zona waktu WIB).`,
     '',
@@ -45,12 +130,13 @@ function buildAiPrompt(accounts: any[], categories: string[], today: string, has
     '6. description: singkat dan jelas, huruf awal kapital, tanpa nominal dan tanpa nama akun (mis. "Bensin", "Bulanan Wifi").',
     '7. Pemindahan saldo antar akun (mis. "pindah 50rb dari seabank ke cash"): SATU entri dengan accountId = akun asal, transferToAccountId = akun tujuan, type "keluar", category "Pindah Saldo". Untuk transaksi biasa, transferToAccountId = "".',
     hasImage
-      ? '8. Untuk foto struk: buat SATU transaksi "keluar" dengan total akhir yang dibayar (setelah diskon/pajak). description berisi nama toko dan 1-3 barang utama. Jangan dipecah per barang, kecuali ada beberapa struk berbeda pada gambar.'
+      ? '8. Jika gambar adalah struk/nota belanja: buat SATU transaksi "keluar" dengan total akhir yang dibayar (setelah diskon/pajak); description berisi nama toko dan 1-3 barang utama. Jika gambar adalah catatan atau daftar (mis. tangkapan layar chat/catatan berisi banyak baris bertanggal): buat SATU transaksi per baris, jangan digabung. Teks dalam kurung adalah keterangan atau kategori (mis. "(pokok)" = kategori Pokok).'
       : '',
     '9. Jika tidak ada transaksi yang bisa dibaca, kembalikan array kosong [].',
-    '10. PENTING: Jika pengguna menulis instruksi seperti "kategori pokok semua", "buat kategori pokok semua", atau sejenisnya, MAKA SEMUA transaksi yang diekstrak HARUS menggunakan category yang diminta pengguna tersebut (misal "Pokok"). Jangan diubah ke kategori lain (seperti "Kendaraan" atau "Pribadi") meskipun ada kata seperti oli, infaq, atau nabung!',
   ].join('\n');
 }
+
+// ---------- Database ----------
 
 let isInitialized = false;
 
@@ -113,15 +199,7 @@ async function ensureTables(sql: any) {
 }
 
 export default async function handler(req: any, res: any) {
-  // Allow CORS for local dev / client calls
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-
-  if (req.method === 'OPTIONS') {
-    return res.status(200).end();
-  }
-
+  // Tanpa CORS: aplikasi dan API berada di domain yang sama
   const databaseUrl = process.env.DATABASE_URL || process.env.NEON_DATABASE_URL;
 
   if (!databaseUrl) {
@@ -134,9 +212,13 @@ export default async function handler(req: any, res: any) {
   const sql = neon(databaseUrl);
   await ensureTables(sql);
 
+  const isAdminReq = verifyToken(req.headers['x-admin-token'] as string | undefined);
+  const denyAdmin = () =>
+    res.status(401).json({ success: false, error: 'Sesi admin berakhir atau tidak valid. Masukkan PIN admin lagi.' });
+
   try {
-    // 1. GET: Fetch transactions and accounts
-        if (req.method === 'GET') {
+    // 1. GET: semua data sekaligus
+    if (req.method === 'GET') {
       const [txRows, accRows, catRows, nameRows] = await Promise.all([
         sql`
           SELECT 
@@ -180,103 +262,187 @@ export default async function handler(req: any, res: any) {
       });
     }
 
-    // 2. POST / PUT: Insert or Update transaction
+    // 2. POST / PUT
     if (req.method === 'POST' || req.method === 'PUT') {
-      // AI Parse (teks bebas atau foto struk via Gemini)
-      if (req.body.entity === 'ai_parse') {
+      const body = req.body || {};
+
+      // Pencatatan otomatis dengan Gemini (hanya admin)
+      if (body.entity === 'ai_parse') {
+        if (!isAdminReq) return denyAdmin();
+
         const apiKey = process.env.GEMINI_API_KEY;
         if (!apiKey) {
-          return res.status(500).json({ error: 'GEMINI_API_KEY belum dikonfigurasi di server.' });
+          return res.status(500).json({ success: false, error: 'GEMINI_API_KEY belum diisi di Vercel.' });
         }
-        const { text, imageBase64, mimeType } = req.body;
+
+        const text = String(body.text || '').slice(0, 8000);
+        const imageBase64 = String(body.imageBase64 || '').replace(/^data:[^;]+;base64,/, '');
+        const mimeType = String(body.mimeType || 'image/jpeg');
+
+        if (!text.trim() && !imageBase64) {
+          return res.status(400).json({ success: false, error: 'Teks atau foto wajib diisi.' });
+        }
+        if (imageBase64.length > 4000000) {
+          return res.status(413).json({ success: false, error: 'Foto terlalu besar. Gunakan foto yang lebih kecil.' });
+        }
+        if (imageBase64 && !['image/jpeg', 'image/png', 'image/webp'].includes(mimeType)) {
+          return res.status(400).json({ success: false, error: 'Format foto harus JPG, PNG, atau WEBP.' });
+        }
+
         const accRows = await sql`SELECT id, name, type FROM accounts ORDER BY id ASC`;
         const catRows = await sql`SELECT name FROM categories ORDER BY name ASC`;
-        const categories = catRows.map((c: any) => c.name);
-        const today = new Date().toISOString().split('T')[0];
-        const prompt = buildAiPrompt(accRows, categories, today, Boolean(imageBase64));
+        if (accRows.length === 0) {
+          return res.status(400).json({ success: false, error: 'Belum ada akun di database.' });
+        }
 
-        const ai = new GoogleGenAI({ apiKey });
-        const parts: any[] = [{ text: prompt }];
-        if (text) parts.push({ text: `\nTEKS DARI PENGGUNA:\n${text}` });
-        if (imageBase64) {
-          const cleanB64 = imageBase64.replace(/^data:image\/\w+;base64,/, '');
-          parts.push({
-            inlineData: {
-              data: cleanB64,
-              mimeType: mimeType || 'image/jpeg',
+        const accountIds: string[] = accRows.map((a: any) => a.id);
+        const categoryNames: string[] = catRows.map((c: any) => c.name);
+        const today = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Jakarta' });
+
+        const parts: any[] = [{ text: buildAiPrompt(accRows, categoryNames, today, Boolean(imageBase64)) }];
+        if (text.trim()) parts.push({ text: `TEKS INPUT:\n${text}` });
+        if (imageBase64) parts.push({ inlineData: { mimeType, data: imageBase64 } });
+
+        const responseSchema = {
+          type: 'ARRAY',
+          items: {
+            type: 'OBJECT',
+            properties: {
+              date: { type: 'STRING' },
+              description: { type: 'STRING' },
+              accountId: { type: 'STRING', enum: accountIds },
+              type: { type: 'STRING', enum: ['masuk', 'keluar'] },
+              category: { type: 'STRING' },
+              amount: { type: 'INTEGER' },
+              transferToAccountId: { type: 'STRING' },
             },
-          });
-        }
-
-        const response = await ai.models.generateContent({
-          model: GEMINI_MODEL,
-          contents: [{ parts }],
-          config: {
-            responseMimeType: 'application/json',
+            required: ['date', 'description', 'accountId', 'type', 'category', 'amount', 'transferToAccountId'],
           },
-        });
+        };
 
-        let transactions: any[] = [];
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), 50000);
+        let gRes: any;
         try {
-          const raw = response.text || '[]';
-          transactions = JSON.parse(raw);
-        } catch (e) {
-          console.warn('Failed to parse AI response as JSON:', e);
+          gRes = await fetch(
+            `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`,
+            {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
+              body: JSON.stringify({
+                contents: [{ role: 'user', parts }],
+                generationConfig: { temperature: 0.1, responseMimeType: 'application/json', responseSchema },
+              }),
+              signal: controller.signal,
+            }
+          );
+        } catch (e: any) {
+          clearTimeout(timer);
+          return res.status(504).json({ success: false, error: 'AI terlalu lama merespons. Coba lagi.' });
         }
+        clearTimeout(timer);
+
+        if (!gRes.ok) {
+          console.error('Gemini error:', gRes.status, await gRes.text());
+          const msg =
+            gRes.status === 429
+              ? 'Kuota Gemini sedang habis. Coba lagi beberapa saat lagi.'
+              : gRes.status === 404
+              ? `Model Gemini "${GEMINI_MODEL}" tidak tersedia. Ganti nilai GEMINI_MODEL di Vercel dengan model terbaru.`
+              : `Gemini menolak permintaan (${gRes.status}). Periksa GEMINI_API_KEY dan GEMINI_MODEL di Vercel.`;
+          return res.status(502).json({ success: false, error: msg });
+        }
+
+        const gJson: any = await gRes.json();
+        const raw = (gJson?.candidates?.[0]?.content?.parts || []).map((p: any) => p.text || '').join('');
+        let items: any;
+        try {
+          items = JSON.parse(raw);
+        } catch {
+          return res.status(502).json({ success: false, error: 'Jawaban AI tidak bisa dibaca. Coba lagi.' });
+        }
+
+        // Validasi ulang hasil AI sebelum dikirim ke aplikasi
+        const accountIdSet = new Set<string>(accountIds);
+        const catMap = new Map<string, string>(
+          categoryNames.map((c: string) => [c.toLowerCase(), c] as [string, string])
+        );
+
+        const transactions = (Array.isArray(items) ? items : [])
+          .slice(0, 50)
+          .map((it: any) => {
+            const accountId = accountIdSet.has(it?.accountId) ? it.accountId : accountIds[0];
+            const toId =
+              accountIdSet.has(it?.transferToAccountId) && it.transferToAccountId !== accountId
+                ? it.transferToAccountId
+                : '';
+            return {
+              date: /^\d{4}-\d{2}-\d{2}$/.test(String(it?.date || '')) ? it.date : today,
+              description: String(it?.description || '').trim().slice(0, 255) || 'Transaksi',
+              accountId,
+              type: toId ? 'keluar' : it?.type === 'masuk' ? 'masuk' : 'keluar',
+              category: toId ? 'Pindah Saldo' : catMap.get(String(it?.category || '').toLowerCase()) || '',
+              amount: Math.round(Number(it?.amount) || 0),
+              transferToAccountId: toId,
+            };
+          })
+          .filter((t: any) => t.amount > 0);
 
         return res.status(200).json({ success: true, transactions });
       }
 
-      // Auth: login, pin_info, or change_pin
-      if (req.body.entity === 'auth') {
-        const { action, pin, currentPin, newPin } = req.body;
-        const pinRows = await sql`SELECT value FROM settings WHERE key = 'admin_pin' LIMIT 1;`;
-        const storedPin = pinRows.length > 0 ? pinRows[0].value : '1234';
-
-        if (action === 'pin_info') {
-          return res.status(200).json({ success: true, length: storedPin.length });
+      // Login / ganti PIN admin
+      if (body.entity === 'auth') {
+        // Panjang PIN (untuk login otomatis di layar PIN). null = tidak diketahui
+        if (body.action === 'pin_info') {
+          const pinRows = await sql`SELECT value FROM settings WHERE key = 'admin_pin' LIMIT 1`;
+          if (pinRows.length === 0) {
+            return res.status(200).json({ success: true, length: DEFAULT_PIN.length });
+          }
+          const lenRows = await sql`SELECT value FROM settings WHERE key = 'admin_pin_len' LIMIT 1`;
+          const len = lenRows.length > 0 ? Number(lenRows[0].value) : 0;
+          return res.status(200).json({ success: true, length: len > 0 ? len : null });
         }
 
-        if (action === 'login') {
-          if (pin === storedPin) {
-            const expiry = Date.now() + 24 * 3600 * 1000;
-            const token = `${expiry}.sig_${Math.random().toString(36).slice(2, 10)}`;
-            return res.status(200).json({ success: true, token });
-          } else {
-            return res.status(401).json({ error: 'PIN Admin salah.' });
+        if (body.action === 'login') {
+          const lockMinutes = await getLoginLock(sql);
+          if (lockMinutes > 0) {
+            return res.status(429).json({
+              success: false,
+              error: `Terlalu banyak percobaan. Coba lagi ${lockMinutes} menit lagi.`,
+            });
           }
+          if (!(await verifyPin(sql, String(body.pin || '')))) {
+            await registerLoginFail(sql);
+            return res.status(403).json({ success: false, error: 'PIN salah! Silakan periksa kembali PIN Anda.' });
+          }
+          await clearLoginFail(sql);
+          return res.status(200).json({ success: true, token: signToken() });
         }
 
-        if (action === 'change_pin') {
-          if (currentPin !== storedPin) {
-            return res.status(400).json({ error: 'PIN lama salah.' });
+        if (body.action === 'change_pin') {
+          if (!isAdminReq) return denyAdmin();
+          const { currentPin, newPin } = body;
+          if (!(await verifyPin(sql, String(currentPin || '')))) {
+            return res.status(403).json({ success: false, error: 'PIN saat ini tidak cocok.' });
           }
-          if (!newPin || newPin.length < 4) {
-            return res.status(400).json({ error: 'PIN baru minimal 4 digit.' });
+          if (!/^\d{4,8}$/.test(String(newPin || ''))) {
+            return res.status(400).json({ success: false, error: 'PIN baru harus 4-8 digit angka.' });
           }
-          await sql`
-            INSERT INTO settings (key, value, updated_at)
-            VALUES ('admin_pin', ${newPin}, CURRENT_TIMESTAMP)
-            ON CONFLICT (key) DO UPDATE SET
-              value = EXCLUDED.value,
-              updated_at = CURRENT_TIMESTAMP;
-          `;
+          await savePin(sql, String(newPin));
           return res.status(200).json({ success: true });
         }
+
+        return res.status(400).json({ success: false, error: 'Aksi tidak dikenal.' });
       }
 
-      // Tambah 1 kategori
-      if (req.body.entity === 'category' && req.body.name) {
-        await sql`
-          INSERT INTO categories (name) VALUES (${String(req.body.name).trim()})
-          ON CONFLICT (name) DO NOTHING;
-        `;
-        return res.status(200).json({ success: true, name: req.body.name });
-      }
-
-      // Upsert 1 pengaturan
-      if (req.body.entity === 'setting' && req.body.key) {
-        const { key, value } = req.body;
+      // Upsert 1 pengaturan (hanya admin, hanya key yang diizinkan)
+      if (body.entity === 'setting' && body.key) {
+        if (!isAdminReq) return denyAdmin();
+        if (!PUBLIC_SETTINGS.includes(body.key)) {
+          return res.status(400).json({ success: false, error: 'Pengaturan tidak diizinkan.' });
+        }
+        const { key, value } = body;
         await sql`
           INSERT INTO settings (key, value, updated_at)
           VALUES (${key}, ${String(value ?? '')}, CURRENT_TIMESTAMP)
@@ -287,11 +453,25 @@ export default async function handler(req: any, res: any) {
         return res.status(200).json({ success: true, key });
       }
 
-      // Upsert 1 akun
-      if (req.body.entity === 'account' && req.body.account) {
-        const acc = req.body.account;
+      // Tambah 1 kategori
+      if (body.entity === 'category' && body.name) {
+        const catName = String(body.name).trim().slice(0, 50);
+        if (!catName) {
+          return res.status(400).json({ success: false, error: 'Nama kategori kosong.' });
+        }
+        await sql`
+          INSERT INTO categories (name) VALUES (${catName})
+          ON CONFLICT (name) DO NOTHING;
+        `;
+        return res.status(200).json({ success: true, name: catName });
+      }
+
+      // Upsert 1 akun (hanya admin)
+      if (body.entity === 'account' && body.account) {
+        if (!isAdminReq) return denyAdmin();
+        const acc = body.account;
         if (!acc.id || !acc.name || !acc.type) {
-          return res.status(400).json({ error: 'Missing required fields: id, name, type.' });
+          return res.status(400).json({ success: false, error: 'Missing required fields: id, name, type.' });
         }
         await sql`
           INSERT INTO accounts (id, name, type, color, icon_name, initial_balance)
@@ -306,10 +486,19 @@ export default async function handler(req: any, res: any) {
         return res.status(200).json({ success: true, id: acc.id });
       }
 
-      // Check if batch sync of all transactions
-      if (req.body.batch && Array.isArray(req.body.transactions)) {
-        const { transactions: batchTx, accounts: batchAcc } = req.body;
-        
+      // Batch transaksi (dan akun)
+      if (body.batch && Array.isArray(body.transactions)) {
+        const { transactions: batchTx, accounts: batchAcc } = body;
+
+        if (Array.isArray(batchAcc) && !isAdminReq) return denyAdmin();
+        if (!isAdminReq) {
+          // Kasir hanya boleh menambah transaksi baru, bukan menimpa yang lama
+          for (const t of batchTx) {
+            const exists = await sql`SELECT 1 FROM transactions WHERE id = ${t.id} LIMIT 1`;
+            if (exists.length > 0) return denyAdmin();
+          }
+        }
+
         if (Array.isArray(batchAcc)) {
           for (const acc of batchAcc) {
             await sql`
@@ -361,13 +550,19 @@ export default async function handler(req: any, res: any) {
       }
 
       // Single transaction upsert
-      const { id, no, date, description, accountId, type, category, amount, notes, transferTargetAccountId, linkedTransactionId, createdAt } = req.body;
+      const { id, no, date, description, accountId, type, category, amount, notes, transferTargetAccountId, linkedTransactionId, createdAt } = body;
 
       if (!description || amount === undefined || !date || !type) {
-        return res.status(400).json({ error: 'Missing required fields: description, amount, date, type.' });
+        return res.status(400).json({ success: false, error: 'Missing required fields: description, amount, date, type.' });
       }
 
       const txId = id || `tx-${Date.now()}`;
+
+      if (!isAdminReq) {
+        // Kasir hanya boleh menambah transaksi baru
+        const exists = await sql`SELECT 1 FROM transactions WHERE id = ${txId} LIMIT 1`;
+        if (exists.length > 0) return denyAdmin();
+      }
 
       await sql`
         INSERT INTO transactions (
@@ -402,14 +597,15 @@ export default async function handler(req: any, res: any) {
       return res.status(200).json({ success: true, id: txId });
     }
 
-    // 3. DELETE: Delete single transaction or all
+    // 3. DELETE: semua hapus hanya untuk admin
     if (req.method === 'DELETE') {
+      if (!isAdminReq) return denyAdmin();
       const { id, clearAll, entity } = req.query;
 
       if (entity === 'category') {
         const catName = req.query.name;
         if (!catName) {
-          return res.status(400).json({ error: 'Missing category name.' });
+          return res.status(400).json({ success: false, error: 'Missing category name.' });
         }
         await sql`UPDATE transactions SET category = '' WHERE category = ${catName};`;
         await sql`DELETE FROM categories WHERE name = ${catName};`;
@@ -418,7 +614,7 @@ export default async function handler(req: any, res: any) {
 
       if (entity === 'account') {
         if (!id) {
-          return res.status(400).json({ error: 'Missing account id.' });
+          return res.status(400).json({ success: false, error: 'Missing account id.' });
         }
         await sql`DELETE FROM accounts WHERE id = ${id};`;
         return res.status(200).json({ success: true, deletedId: id });
@@ -430,16 +626,16 @@ export default async function handler(req: any, res: any) {
       }
 
       if (!id) {
-        return res.status(400).json({ error: 'Missing transaction id.' });
+        return res.status(400).json({ success: false, error: 'Missing transaction id.' });
       }
 
       await sql`DELETE FROM transactions WHERE id = ${id};`;
       return res.status(200).json({ success: true, deletedId: id });
     }
 
-    return res.status(405).json({ error: 'Method not allowed' });
+    return res.status(405).json({ success: false, error: 'Method not allowed' });
   } catch (error: any) {
     console.error('Vercel API error:', error);
-    return res.status(500).json({ error: error.message || 'Internal Server Error' });
+    return res.status(500).json({ success: false, error: error.message || 'Internal Server Error' });
   }
 }
