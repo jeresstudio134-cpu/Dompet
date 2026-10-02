@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { 
   X, 
   Lock, 
@@ -21,6 +21,7 @@ import {
 } from 'lucide-react';
 import { Account, Transaction } from '../types/finance.ts';
 import { parseRupiahInput, formatRupiah } from '../utils/formatters.ts';
+import { apiLogin, apiChangePin, apiPinLength } from '../lib/api.ts';
 
 export const ADMIN_PIN_KEY = 'dompet_toko_admin_pin';
 export const DEFAULT_ADMIN_PIN = '1234';
@@ -55,7 +56,7 @@ interface AdminPinModalProps {
   onEditAccount: (id: string, updated: { name: string; type: 'cash' | 'bank' | 'ewallet'; initialBalance?: number }) => void;
   onDeleteAccount: (id: string) => void;
   storeName?: string;
-  onUpdateStoreName?: (name: string) => void;
+  onUpdateStoreName?: (name: string) => Promise<boolean> | void;
 }
 
 export const AdminPinModal: React.FC<AdminPinModalProps> = ({
@@ -76,6 +77,8 @@ export const AdminPinModal: React.FC<AdminPinModalProps> = ({
   const [showPin, setShowPin] = useState(false);
   const [errorMessage, setErrorMessage] = useState('');
   const [successMessage, setSuccessMessage] = useState('');
+  const [isVerifying, setIsVerifying] = useState(false);
+  const [pinLength, setPinLength] = useState<number | null>(null);
 
   // Mode: 'login' | 'menu' | 'change_pin' | 'manage_accounts' | 'change_store_name'
   const [activeView, setActiveView] = useState<'login' | 'menu' | 'change_pin' | 'manage_accounts' | 'change_store_name'>('menu');
@@ -96,36 +99,60 @@ export const AdminPinModal: React.FC<AdminPinModalProps> = ({
   const [accountInitialBalance, setAccountInitialBalance] = useState<string>('0');
   const [deletingAccountId, setDeletingAccountId] = useState<string | null>(null);
 
+    // Ambil panjang PIN dari server saat layar PIN dibuka
+  useEffect(() => {
+    if (!isOpen || isAdmin) return;
+    let active = true;
+    apiPinLength()
+      .then(len => {
+        if (active) setPinLength(len);
+      })
+      .catch(() => {
+        if (active) setPinLength(null);
+      });
+    return () => {
+      active = false;
+    };
+  }, [isOpen, isAdmin]);
+
+  // Login otomatis saat jumlah digit sama dengan panjang PIN
+  useEffect(() => {
+    if (!isOpen || isAdmin || isVerifying || !pinLength) return;
+    if (pinInput.length === pinLength) {
+      verifyPin(pinInput);
+    }
+  }, [pinInput, pinLength]);
+
   if (!isOpen) return null;
 
-  const handleVerifyPin = (e: React.FormEvent) => {
-    e.preventDefault();
+   const verifyPin = async (pin: string) => {
     setErrorMessage('');
-    const currentStoredPin = getSavedAdminPin();
-
-    if (pinInput.trim() === currentStoredPin) {
+    setIsVerifying(true);
+    try {
+      await apiLogin(pin.trim());
       setPinInput('');
-      setErrorMessage('');
       onLoginSuccess();
       setActiveView('menu');
-    } else {
-      setErrorMessage('PIN salah! Silakan periksa kembali PIN Anda.');
+    } catch (err: any) {
+      setErrorMessage(err.message || 'Gagal memeriksa PIN. Periksa koneksi lalu coba lagi.');
+      setPinInput(''); // kosongkan supaya bisa mengetik ulang
+    } finally {
+      setIsVerifying(false);
     }
   };
 
-  const handleChangePin = (e: React.FormEvent) => {
+  const handleVerifyPin = (e: React.FormEvent) => {
+    e.preventDefault();
+    verifyPin(pinInput);
+  };
+
+  const handleChangePin = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMessage('');
     setSuccessMessage('');
-    const currentStoredPin = getSavedAdminPin();
 
-    if (currentPinInput.trim() !== currentStoredPin) {
-      setErrorMessage('PIN saat ini tidak cocok.');
-      return;
-    }
-
-    if (newPinInput.length < 4) {
-      setErrorMessage('PIN baru minimal harus 4 digit angka.');
+    if (!/^\d{4,8}$/.test(newPinInput)) {
+      setErrorMessage('PIN baru harus 4-8 digit angka.');
       return;
     }
 
@@ -134,7 +161,13 @@ export const AdminPinModal: React.FC<AdminPinModalProps> = ({
       return;
     }
 
-    saveAdminPin(newPinInput);
+    try {
+      await apiChangePin(currentPinInput.trim(), newPinInput.trim());
+    } catch (err: any) {
+      setErrorMessage(err.message || 'Gagal mengganti PIN. Periksa koneksi lalu coba lagi.');
+      return;
+    }
+
     setSuccessMessage('PIN Admin berhasil diperbarui!');
     setCurrentPinInput('');
     setNewPinInput('');
@@ -151,7 +184,9 @@ export const AdminPinModal: React.FC<AdminPinModalProps> = ({
       setPinInput(prev => prev.slice(0, -1));
     } else if (val === 'clear') {
       setPinInput('');
-    } else if (pinInput.length < 8) {
+    } else if (isVerifying) {
+      return;
+    } else if (pinInput.length < (pinLength ?? 8)) {
       setPinInput(prev => prev + val);
     }
   };
@@ -611,14 +646,19 @@ export const AdminPinModal: React.FC<AdminPinModalProps> = ({
               ) : activeView === 'change_store_name' ? (
                 /* VIEW: CHANGE STORE NAME */
                 <form 
-                  onSubmit={(e) => {
+                  onSubmit={async (e) => {
                     e.preventDefault();
+                    setErrorMessage('');
                     if (!storeNameInput.trim()) {
                       setErrorMessage('Nama toko tidak boleh kosong.');
                       return;
                     }
                     if (onUpdateStoreName) {
-                      onUpdateStoreName(storeNameInput.trim());
+                      const ok = await onUpdateStoreName(storeNameInput.trim());
+                      if (ok === false) {
+                        setErrorMessage('Gagal menyimpan nama toko. Pastikan mode admin masih aktif dan koneksi baik.');
+                        return;
+                      }
                     }
                     setSuccessMessage('Nama toko berhasil diperbarui!');
                     setTimeout(() => {
@@ -804,9 +844,7 @@ export const AdminPinModal: React.FC<AdminPinModalProps> = ({
                 <p className="text-xs text-slate-600">
                   Masukkan PIN Owner untuk mengakses pengaturan akun toko dan fitur admin.
                 </p>
-                <p className="text-[10px] text-slate-400">
-                  (PIN default: <strong>1234</strong>)
-                </p>
+                
               </div>
 
               {/* PIN Display Input */}
@@ -816,9 +854,9 @@ export const AdminPinModal: React.FC<AdminPinModalProps> = ({
                   inputMode="numeric"
                   value={pinInput}
                   onChange={(e) => setPinInput(e.target.value.replace(/\D/g, ''))}
-                  placeholder="Ketik 4 digit PIN..."
+                  placeholder={pinLength ? `Ketik ${pinLength} digit PIN...` : 'Ketik PIN...'}
                   autoFocus
-                  maxLength={8}
+                  maxLength={pinLength ?? 8}
                   className="w-full bg-slate-50 text-slate-900 text-center text-lg tracking-widest font-mono font-bold rounded-2xl py-2.5 border border-slate-300 focus:outline-none focus:ring-2 focus:ring-[#1e3a5f] focus:bg-white transition"
                 />
                 <button
@@ -858,7 +896,7 @@ export const AdminPinModal: React.FC<AdminPinModalProps> = ({
 
               <button
                 type="submit"
-                disabled={pinInput.length === 0}
+                disabled={pinInput.length === 0 || isVerifying}
                 className="w-full py-2.5 rounded-xl bg-[#1e3a5f] hover:bg-[#152942] disabled:opacity-50 text-white font-bold text-xs tracking-wide transition shadow-sm cursor-pointer flex items-center justify-center gap-1.5"
               >
                 <Unlock className="w-3.5 h-3.5" />

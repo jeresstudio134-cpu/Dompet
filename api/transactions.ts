@@ -227,11 +227,15 @@ export default async function handler(req: any, res: any) {
         return res.status(200).json({ success: true, transactions });
       }
 
-      // Auth: login or change_pin
+      // Auth: login, pin_info, or change_pin
       if (req.body.entity === 'auth') {
         const { action, pin, currentPin, newPin } = req.body;
         const pinRows = await sql`SELECT value FROM settings WHERE key = 'admin_pin' LIMIT 1;`;
         const storedPin = pinRows.length > 0 ? pinRows[0].value : '1234';
+
+        if (action === 'pin_info') {
+          return res.status(200).json({ success: true, length: storedPin.length });
+        }
 
         if (action === 'login') {
           if (pin === storedPin) {
