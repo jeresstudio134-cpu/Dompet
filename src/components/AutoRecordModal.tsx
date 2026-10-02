@@ -1,4 +1,4 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { Sparkles, X, Camera, Check, AlertCircle, Trash2, RefreshCw } from 'lucide-react';
 import confetti from 'canvas-confetti';
 import { Account, Transaction } from '../types/finance.ts';
@@ -36,6 +36,30 @@ export const AutoRecordModal: React.FC<AutoRecordModalProps> = ({
   const [notice, setNotice] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const keyRef = useRef(0);
+
+  // Tempel (Ctrl+V) foto struk dari clipboard, hanya aktif di tab foto
+  useEffect(() => {
+    if (!isOpen || activeTab !== 'receipt') return;
+
+    const onPaste = (e: ClipboardEvent) => {
+      if (isLoading) return;
+      const clipItems = e.clipboardData?.items;
+      if (!clipItems) return;
+      for (const item of Array.from(clipItems)) {
+        if (item.kind === 'file' && item.type.startsWith('image/')) {
+          const file = item.getAsFile();
+          if (file) {
+            e.preventDefault();
+            processFile(file);
+            return;
+          }
+        }
+      }
+    };
+
+    document.addEventListener('paste', onPaste);
+    return () => document.removeEventListener('paste', onPaste);
+  }, [isOpen, activeTab, isLoading]);
 
   if (!isOpen) return null;
 
@@ -107,11 +131,7 @@ export const AutoRecordModal: React.FC<AutoRecordModalProps> = ({
   };
 
   // Scan foto struk dengan AI
-  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    e.target.value = '';
-    if (!file) return;
-
+  const processFile = async (file: File) => {
     setError(null);
     setNotice(null);
     setItems([]);
@@ -130,6 +150,12 @@ export const AutoRecordModal: React.FC<AutoRecordModalProps> = ({
     } finally {
       setIsLoading(false);
     }
+  };
+
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (file) processFile(file);
   };
 
   // Simpan semua baris pratinjau
