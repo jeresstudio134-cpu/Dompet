@@ -1,4 +1,54 @@
+// api/ai-parse-debt.ts
 import type { VercelRequest, VercelResponse } from '@vercel/node';
+
+/**
+ * Coba parse JSON dari string yang mungkin mengandung teks lain.
+ * Strategi: coba JSON.parse → strip markdown → cari objek { } pertama → cari array [ ] pertama.
+ */
+function extractJSON(raw: string): any | null {
+  if (!raw) return null;
+  const trimmed = raw.trim();
+
+  // 1. Coba langsung
+  try {
+    return JSON.parse(trimmed);
+  } catch {}
+
+  // 2. Strip markdown code fence ```json ... ```
+  const fenceMatch = trimmed.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
+  if (fenceMatch) {
+    try {
+      return JSON.parse(fenceMatch[1]);
+    } catch {}
+  }
+
+  // 3. Cari objek JSON pertama {...}
+  const objMatch = trimmed.match(/\{[\s\S]*\}/);
+  if (objMatch) {
+    try {
+      return JSON.parse(objMatch[0]);
+    } catch {
+      // kadang ada koma trailing: coba bersihkan
+      const cleaned = objMatch[0]
+        .replace(/,\s*([}\]])/g, '$1') // hapus koma sebelum } atau ]
+        .replace(/[\u0000-\u001F]+/g, ' '); // hapus control char
+      try {
+        return JSON.parse(cleaned);
+      } catch {}
+    }
+  }
+
+  // 4. Cari array JSON pertama [...]
+  const arrMatch = trimmed.match(/\[[\s\S]*\]/);
+  if (arrMatch) {
+    try {
+      const arr = JSON.parse(arrMatch[0]);
+      return { debts: arr };
+    } catch {}
+  }
+
+  return null;
+}
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   try {
@@ -19,45 +69,38 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     const today = new Date().toISOString().split('T')[0];
 
-    const promptText = `
-Kamu adalah asisten pencatat utang/piutang. Baca input (teks atau gambar nota/struk) dan ubah menjadi JSON array.
-Tanggal hari ini: ${today}.
+    // Prompt super tegas agar AI hanya balas JSON
+    const promptText = `Tugas: ekstrak data utang/piutang dari input user menjadi JSON.
 
-Aturan:
-- "utang" = saya berutang ke orang lain
-- "piutang" = orang lain berutang ke saya
-- Format nominal: "5jt" = 5000000, "500rb" = 500000, "1m" = 1000000000
-- Jika tidak jelas tanggal mulai, pakai tanggal hari ini
-- Jika ada "jatuh tempo", isi dueDate
-- Jika ada "cicilan" atau "angsuran", isi installmentAmount dan installmentPeriod
+ATURAN OUTPUT (WAJIB):
+- Balas HANYA JSON, tanpa penjelasan, tanpa markdown, tanpa code fence.
+- Format: {"debts": [ ... ]}
+- Jika tidak ada data, balas: {"debts": []}
 
-Format output JSON:
-{
-  "debts": [
-    {
-      "type": "utang" | "piutang",
-      "name": "nama utang (mis. Motor Vario)",
-      "counterparty": "nama orang/tempat",
-      "totalAmount": 5000000,
-      "startDate": "2026-10-03",
-      "dueDate": "2027-10-03",
-      "installmentAmount": 500000,
-      "installmentPeriod": 12,
-      "notes": "catatan tambahan (opsional)"
-    }
-  ]
-}
+ATURAN DATA:
+- "utang" = saya berutang ke orang lain. "piutang" = orang berutang ke saya.
+- Nominal: "5jt"=5000000, "500rb"=500000, "1,5jt"=1500000. Hapus titik/koma pemisah ribuan.
+- Tanggal hari ini: ${today}. Kalau tidak ada tanggal, pakai tanggal hari ini.
+- Kalau ada "jatuh tempo", isi dueDate (format YYYY-MM-DD).
+- Kalau ada cicilan/angsuran, isi installmentAmount dan installmentPeriod.
 
-Balas HANYA JSON, tanpa penjelasan.
-`;
+SKEMA:
+{"debts":[{
+  "type":"utang"|"piutang",
+  "name":"string",
+  "counterparty":"string",
+  "totalAmount":number,
+  "startDate":"YYYY-MM-DD",
+  "dueDate":"YYYY-MM-DD"|null,
+  "installmentAmount":number|null,
+  "installmentPeriod":number|null,
+  "notes":"string"|null
+}]}`;
 
-    // Siapkan parts untuk Gemini
     const parts: any[] = [{ text: promptText }];
 
     if (imageBase64) {
-      parts.push({
-        text: '\n\nTeks / nota yang perlu dianalisis:',
-      });
+      parts.push({ text: 'Gambar ini berisi catatan utang/piutang. Ekstrak datanya.' });
       parts.push({
         inlineData: {
           mimeType: mimeType || 'image/jpeg',
@@ -65,9 +108,7 @@ Balas HANYA JSON, tanpa penjelasan.
         },
       });
     } else {
-      parts.push({
-        text: `\n\nTeks:\n"""\n${text.trim()}\n"""`,
-      });
+      parts.push({ text: `Teks:\n${text.trim()}` });
     }
 
     const geminiRes = await fetch(
@@ -77,34 +118,72 @@ Balas HANYA JSON, tanpa penjelasan.
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           contents: [{ parts }],
-          generationConfig: { temperature: 0.1, responseMimeType: 'application/json' },
+          generationConfig: {
+            temperature: 0.1,
+            maxOutputTokens: 2048,
+            responseMimeType: 'application/json',
+          },
         }),
       }
     );
 
-    const geminiJson = await geminiRes.json();
-    const rawText = geminiJson?.candidates?.[0]?.content?.parts?.[0]?.text || '';
-
-    let parsed: any;
-    try {
-      parsed = JSON.parse(rawText);
-    } catch {
-      const match = rawText.match(/\{[\s\S]*\}/);
-      if (match) parsed = JSON.parse(match[0]);
-      else throw new Error('AI tidak mengembalikan JSON valid.');
+    if (!geminiRes.ok) {
+      const errText = await geminiRes.text();
+      console.error('Gemini HTTP error:', geminiRes.status, errText);
+      return res.status(500).json({
+        success: false,
+        error: `Gemini error (${geminiRes.status}). Periksa API key & quota.`,
+      });
     }
 
-    const debts = (parsed.debts || []).map((d: any) => ({
-      type: d.type === 'piutang' ? 'piutang' : 'utang',
-      name: String(d.name || '').trim(),
-      counterparty: String(d.counterparty || '').trim(),
-      totalAmount: Number(d.totalAmount) || 0,
-      startDate: d.startDate || today,
-      dueDate: d.dueDate || undefined,
-      installmentAmount: d.installmentAmount ? Number(d.installmentAmount) : undefined,
-      installmentPeriod: d.installmentPeriod ? Number(d.installmentPeriod) : undefined,
-      notes: d.notes || undefined,
-    })).filter((d: any) => d.name && d.totalAmount > 0);
+    const geminiJson = await geminiRes.json();
+    const rawText: string =
+      geminiJson?.candidates?.[0]?.content?.parts?.[0]?.text || '';
+
+    console.log('=== GEMINI RAW RESPONSE ===');
+    console.log(rawText.slice(0, 2000)); // log 2000 char pertama untuk debug
+    console.log('=== END RAW ===');
+
+    if (!rawText) {
+      return res.status(200).json({
+        success: true,
+        debts: [],
+        _warning: 'Gemini mengembalikan respons kosong.',
+      });
+    }
+
+    const parsed = extractJSON(rawText);
+    if (!parsed) {
+      console.error('Gagal parse JSON. Raw response:', rawText);
+      return res.status(200).json({
+        success: true,
+        debts: [],
+        _warning: 'AI tidak mengembalikan JSON valid. Coba teks yang lebih jelas.',
+      });
+    }
+
+    // Normalisasi
+    let rawDebts: any[] = [];
+    if (Array.isArray(parsed)) rawDebts = parsed;
+    else if (Array.isArray(parsed.debts)) rawDebts = parsed.debts;
+    else if (typeof parsed === 'object' && parsed.name && parsed.totalAmount) {
+      // AI kadang balas objek tunggal, bukan array
+      rawDebts = [parsed];
+    }
+
+    const debts = rawDebts
+      .map((d: any) => ({
+        type: d.type === 'piutang' ? 'piutang' : 'utang',
+        name: String(d.name || '').trim(),
+        counterparty: String(d.counterparty || '').trim(),
+        totalAmount: Math.abs(Number(d.totalAmount) || 0),
+        startDate: d.startDate || today,
+        dueDate: d.dueDate || undefined,
+        installmentAmount: d.installmentAmount ? Math.abs(Number(d.installmentAmount)) : undefined,
+        installmentPeriod: d.installmentPeriod ? Number(d.installmentPeriod) : undefined,
+        notes: d.notes || undefined,
+      }))
+      .filter((d: any) => d.name && d.totalAmount > 0);
 
     return res.status(200).json({ success: true, debts });
   } catch (e: any) {
