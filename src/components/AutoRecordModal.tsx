@@ -12,6 +12,7 @@ interface AutoRecordModalProps {
   onAddTransactions: (transactions: Omit<Transaction, 'id'>[]) => Promise<boolean> | void;
   accounts: Account[];
   categories: string[];
+  onAddCategory?: (name: string) => Promise<any> | void;
 }
 
 type Item = ParsedTransactionResult & { key: string };
@@ -25,6 +26,7 @@ export const AutoRecordModal: React.FC<AutoRecordModalProps> = ({
   onAddTransactions,
   accounts,
   categories,
+  onAddCategory,
 }) => {
   const [activeTab, setActiveTab] = useState<'text' | 'receipt'>('text');
   const [textInput, setTextInput] = useState('');
@@ -34,6 +36,9 @@ export const AutoRecordModal: React.FC<AutoRecordModalProps> = ({
   const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [newCatTargetKey, setNewCatTargetKey] = useState<string | null>(null);
+  const [newCatName, setNewCatName] = useState('');
+  const [extraCategories, setExtraCategories] = useState<string[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const keyRef = useRef(0);
 
@@ -92,6 +97,25 @@ export const AutoRecordModal: React.FC<AutoRecordModalProps> = ({
 
   const removeItem = (key: string) => {
     setItems(prev => prev.filter(i => i.key !== key));
+  };
+
+  const handleAddNewCategory = async (targetKey: string, rawName: string) => {
+    const trimmed = rawName.trim().slice(0, 50);
+    if (!trimmed) {
+      setNewCatTargetKey(null);
+      return;
+    }
+    setExtraCategories(prev => Array.from(new Set([...prev, trimmed])));
+    updateItem(targetKey, { category: trimmed });
+    if (onAddCategory) {
+      try {
+        await onAddCategory(trimmed);
+      } catch (err) {
+        console.warn('Add category error:', err);
+      }
+    }
+    setNewCatTargetKey(null);
+    setNewCatName('');
   };
 
   const isItemValid = (it: Item) =>
@@ -203,6 +227,24 @@ export const AutoRecordModal: React.FC<AutoRecordModalProps> = ({
 
     setIsSaving(true);
     try {
+      // 1. Simpan semua kategori baru secara otomatis ke database & daftar kategori
+      const newCategoriesToPersist = Array.from(
+        new Set(
+          toSave
+            .map(t => t.category?.trim())
+            .filter((c): c is string => Boolean(c && c !== 'Pindah Saldo' && !categories.includes(c)))
+        )
+      );
+      if (newCategoriesToPersist.length > 0 && onAddCategory) {
+        for (const cat of newCategoriesToPersist) {
+          try {
+            await onAddCategory(cat);
+          } catch (e) {
+            console.warn('Auto add category error:', e);
+          }
+        }
+      }
+
       const ok = await onAddTransactions(toSave);
       if (ok === false) return; // gagal simpan: pratinjau dibiarkan agar bisa dicoba lagi
       confetti({ particleCount: 40, spread: 60, origin: { y: 0.8 } });
@@ -231,7 +273,9 @@ export const AutoRecordModal: React.FC<AutoRecordModalProps> = ({
           {items.map(it => {
             const valid = isItemValid(it);
             const isTransfer = Boolean(it.transferTargetAccountId);
-            const catOptions = Array.from(new Set([...categories, it.category].filter(Boolean)));
+            const catOptions = Array.from(
+              new Set([...categories, ...extraCategories, it.category].filter(Boolean))
+            );
 
             return (
               <div
@@ -304,7 +348,14 @@ export const AutoRecordModal: React.FC<AutoRecordModalProps> = ({
                   ) : (
                     <select
                       value={it.category}
-                      onChange={e => updateItem(it.key, { category: e.target.value })}
+                      onChange={e => {
+                        if (e.target.value === '__ADD_NEW__') {
+                          setNewCatTargetKey(it.key);
+                          setNewCatName('');
+                        } else {
+                          updateItem(it.key, { category: e.target.value });
+                        }
+                      }}
                       className={inputCls}
                     >
                       <option value="">— tanpa kategori —</option>
@@ -313,9 +364,48 @@ export const AutoRecordModal: React.FC<AutoRecordModalProps> = ({
                           {c}
                         </option>
                       ))}
+                      <option value="__ADD_NEW__" className="text-emerald-400 font-bold bg-slate-800">
+                        ➕ Tambah Kategori Baru...
+                      </option>
                     </select>
                   )}
                 </div>
+
+                {newCatTargetKey === it.key && (
+                  <div className="flex items-center gap-1.5 p-1.5 bg-slate-900 rounded-lg border border-emerald-500/60 animate-in fade-in">
+                    <input
+                      type="text"
+                      autoFocus
+                      value={newCatName}
+                      placeholder="Nama kategori baru..."
+                      onChange={e => setNewCatName(e.target.value)}
+                      onKeyDown={e => {
+                        if (e.key === 'Enter') {
+                          e.preventDefault();
+                          handleAddNewCategory(it.key, newCatName);
+                        } else if (e.key === 'Escape') {
+                          setNewCatTargetKey(null);
+                        }
+                      }}
+                      className="flex-1 bg-transparent text-xs text-white placeholder-slate-500 px-2 py-1 outline-none"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => handleAddNewCategory(it.key, newCatName)}
+                      disabled={!newCatName.trim()}
+                      className="px-2.5 py-1 rounded-md bg-emerald-600 hover:bg-emerald-500 text-white text-[11px] font-bold disabled:opacity-40 transition cursor-pointer"
+                    >
+                      Simpan
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setNewCatTargetKey(null)}
+                      className="p-1 text-slate-400 hover:text-white transition cursor-pointer"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                )}
 
                 {isTransfer ? (
                   <div className="text-[11px] text-sky-300">💡 Pindah saldo antar akun</div>

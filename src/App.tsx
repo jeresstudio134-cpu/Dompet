@@ -4,7 +4,6 @@
  */
 
 import React, { useState, useEffect, useMemo } from 'react';
-import confetti from 'canvas-confetti';
 import { 
   INITIAL_ACCOUNTS, 
   INITIAL_CATEGORIES 
@@ -18,7 +17,6 @@ import {
 } from './types/finance.ts';
 import { 
   getMonthYearOptions, 
-  getCurrentDateIndo,
   formatRupiah 
 } from './utils/formatters.ts';
 import { getSavedNeonConfig, saveNeonConfig } from './lib/neon.ts';
@@ -33,19 +31,27 @@ import {
   apiDeleteCategory,
   apiSaveSetting,
   getAdminToken,
+  apiLoadDebts,
+  apiSaveDebt,
+  apiDeleteDebt,
+  apiSaveDebtPayment,
+  apiDeleteDebtPayment,
   clearAdminToken
 } from './lib/api.ts';
 
 // Components
 import { DompetTokoView } from './components/DompetTokoView.tsx';
 import { AutoRecordModal } from './components/AutoRecordModal.tsx';
-import { AddTransactionModal } from './components/AddTransactionModal.tsx';
 import { NeonVercelModal } from './components/NeonVercelModal.tsx';
 import { ExportImportModal } from './components/ExportImportModal.tsx';
 import { AdminPinModal } from './components/AdminPinModal.tsx';
+import { Debt, DebtPayment } from './types/finance.ts';
+import { UtangPiutangView } from './components/UtangPiutangView.tsx';
+import { Wallet, CreditCard } from 'lucide-react';
+
 
 export default function App() {
-    // 1. Core State: semua data bersumber dari database (lewat /api/transactions)
+  // 1. Core State: semua data bersumber dari database (lewat /api/transactions)
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [storeName, setStoreName] = useState<string>('Dompet Toko');
@@ -67,14 +73,14 @@ export default function App() {
     }
   };
 
-  // Dynamic Categories (stored in localStorage, excluding 'Lainnya' / 'lainya')
+  // Kategori (disimpan di database, tanpa 'Lainnya' / 'lainya')
   const isExcludedCategory = (name?: string) => {
     if (!name) return true;
     const lower = name.trim().toLowerCase();
     return lower === '' || lower === '-' || lower === 'lainnya' || lower === 'lainya' || lower === 'lain-lain' || lower === 'lain nya';
   };
 
-    const [categories, setCategories] = useState<string[]>([]);
+  const [categories, setCategories] = useState<string[]>([]);
 
   const handleAddCategory = async (newCat: string) => {
     const trimmed = newCat.trim();
@@ -103,6 +109,89 @@ export default function App() {
     }
   };
 
+  const [debts, setDebts] = useState<Debt[]>([]);
+
+  // Navigasi view: 'dompet' = Dompet Toko, 'utang' = Utang & Piutang
+  const [mainView, setMainView] = useState<'dompet' | 'utang'>('dompet');
+
+  // Handler: Tambah utang/piutang
+  const handleAddDebt = async (debtData: Omit<Debt, 'id' | 'createdAt' | 'payments'>) => {
+    const newDebt: Debt = {
+      ...debtData,
+      id: `debt-${Date.now()}`,
+      createdAt: new Date().toISOString(),
+      payments: [],
+    };
+    try {
+      await apiSaveDebt(newDebt);
+      setDebts(prev => [newDebt, ...prev]);
+      showToast(`${debtData.type === 'utang' ? 'Utang' : 'Piutang'} "${debtData.name}" berhasil dicatat!`);
+    } catch (e) {
+      console.error(e);
+      showToast('Gagal menyimpan ke database. Coba lagi.', 'error');
+    }
+  };
+
+  // Handler: Update utang/piutang
+  const handleUpdateDebt = async (updated: Debt) => {
+    try {
+      await apiSaveDebt(updated);
+      setDebts(prev => prev.map(d => (d.id === updated.id ? updated : d)));
+      showToast(`Perubahan "${updated.name}" disimpan.`);
+    } catch (e) {
+      console.error(e);
+      showToast('Gagal memperbarui. Coba lagi.', 'error');
+    }
+  };
+
+  // Handler: Hapus utang/piutang
+  const handleDeleteDebt = async (id: string) => {
+    const target = debts.find(d => d.id === id);
+    try {
+      await apiDeleteDebt(id);
+      setDebts(prev => prev.filter(d => d.id !== id));
+      showToast(`${target?.type === 'utang' ? 'Utang' : 'Piutang'} "${target?.name}" dihapus.`, 'info');
+    } catch (e) {
+      console.error(e);
+      showToast('Gagal menghapus. Coba lagi.', 'error');
+    }
+  };
+
+  // Handler: Tambah pembayaran/angsuran
+  const handleAddDebtPayment = async (debtId: string, payment: Omit<DebtPayment, 'id' | 'debtId'>) => {
+    const newPayment: DebtPayment = {
+      ...payment,
+      id: `pay-${Date.now()}-${Math.random().toString(36).slice(-4)}`,
+      debtId,
+    };
+    try {
+      await apiSaveDebtPayment(newPayment);
+      setDebts(prev => prev.map(d =>
+        d.id === debtId ? { ...d, payments: [...d.payments, newPayment] } : d
+      ));
+      showToast(`Pembayaran ${formatRupiah(payment.amount)} berhasil dicatat!`);
+    } catch (e) {
+      console.error(e);
+      showToast('Gagal menyimpan pembayaran. Coba lagi.', 'error');
+    }
+  };
+
+  // Handler: Hapus pembayaran
+  const handleDeleteDebtPayment = async (debtId: string, paymentId: string) => {
+    try {
+      await apiDeleteDebtPayment(paymentId);
+      setDebts(prev => prev.map(d => {
+        if (d.id !== debtId) return d;
+        return { ...d, payments: d.payments.filter(p => p.id !== paymentId) };
+      }));
+      showToast('Pembayaran dihapus.', 'info');
+    } catch (e) {
+      console.error(e);
+      showToast('Gagal menghapus pembayaran. Coba lagi.', 'error');
+    }
+  };
+
+
   // 2. Neon Postgres Configuration
   const [neonConfig, setNeonConfig] = useState<NeonConfig>(() => getSavedNeonConfig());
 
@@ -117,11 +206,7 @@ export default function App() {
     dateTo: '',
   });
 
-  const [sortOrder, setSortOrder] = useState<
-    'newest' | 'oldest'
-  >('newest');
-
-    // Handler: Add Account (Admin)
+  // Handler: Add Account (Admin)
   const handleAddAccount = async (newAcc: { name: string; type: 'cash' | 'bank' | 'ewallet'; initialBalance?: number }) => {
     const slug = newAcc.name.toLowerCase().trim().replace(/[^a-z0-9]/g, '_');
     const id = `${slug || 'acc'}_${Date.now().toString(36).slice(-4)}`;
@@ -188,11 +273,8 @@ export default function App() {
 
   // 4. Modal States
   const [isAutoRecordOpen, setIsAutoRecordOpen] = useState(false);
-  const [isAddModalOpen, setIsAddModalOpen] = useState(false);
-  const [isTransferModalOpen, setIsTransferModalOpen] = useState(false);
   const [isNeonModalOpen, setIsNeonModalOpen] = useState(false);
   const [isExportImportOpen, setIsExportImportOpen] = useState(false);
-  const [editingTransaction, setEditingTransaction] = useState<Transaction | null>(null);
 
   // 5. Admin Authentication State (token sesi dari server)
   const [isAdmin, setIsAdmin] = useState<boolean>(() => Boolean(getAdminToken()));
@@ -245,7 +327,7 @@ export default function App() {
     setTimeout(() => setToast(null), 3500);
   };
 
-    // Muat semua data dari database
+  // Muat semua data dari database
   const loadAll = async () => {
     setIsLoading(true);
     setLoadError(null);
@@ -270,6 +352,15 @@ export default function App() {
       setTransactions(data.transactions);
       setCategories(cats);
       if (data.storeName && data.storeName.trim()) setStoreName(data.storeName.trim());
+
+      // Muat data utang-piutang (paralel, tidak blocking kalau error)
+      try {
+        const loadedDebts = await apiLoadDebts();
+        setDebts(loadedDebts);
+      } catch (debtErr) {
+        console.warn('Gagal memuat utang-piutang:', debtErr);
+        // Tidak fatal, biarkan aplikasi tetap jalan
+      }
     } catch (e: any) {
       console.error(e);
       setLoadError(e.message || 'Gagal memuat data dari database.');
@@ -312,7 +403,7 @@ export default function App() {
     const sisaSaldo = totalMasuk - totalKeluar;
     const sisaPersen = totalMasuk > 0 ? (sisaSaldo / totalMasuk) * 100 : 0;
 
-    // 2. Real-time Account balances: calculated from account initialBalance + all actual recorded transactions
+    // Saldo akun: saldo awal + semua transaksi yang tercatat
     const accountBalances: Record<string, number> = {};
     accounts.forEach(acc => {
       accountBalances[acc.id] = acc.initialBalance || 0;
@@ -341,7 +432,7 @@ export default function App() {
     };
   }, [transactions, accounts]);
 
-  // Filtered transactions matching the active filters
+  // Filtered transactions matching the active filters (dipakai untuk ekspor Excel)
   const filteredTransactions = useMemo(() => {
     return transactions.filter(t => {
       if (filter.monthYear !== 'ALL' && !t.date.startsWith(filter.monthYear)) return false;
@@ -364,27 +455,7 @@ export default function App() {
     });
   }, [transactions, filter]);
 
-   const sortedTransactions = useMemo(() => {
-  return [...filteredTransactions].sort((a, b) => {
-    const dateCompare = a.date.localeCompare(b.date);
-
-    if (dateCompare !== 0) {
-      return sortOrder === 'newest'
-        ? -dateCompare
-        : dateCompare;
-    }
-
-    // Jika tanggal sama, gunakan waktu pencatatan
-    const timeA = a.createdAt || '';
-    const timeB = b.createdAt || '';
-
-    return sortOrder === 'newest'
-      ? timeB.localeCompare(timeA)
-      : timeA.localeCompare(timeB);
-  });
-}, [filteredTransactions, sortOrder]);
-
-    const getNextNo = () =>
+  const getNextNo = () =>
     (transactions.length > 0 ? Math.max(...transactions.map(t => t.no || 0)) : 0) + 1;
 
   // Handler: Add new transactions (from Auto Record)
@@ -575,8 +646,10 @@ export default function App() {
   const handleDeleteTransaction = async (id: string) => {
     const target = transactions.find(t => t.id === id);
     if (!confirm(`Hapus transaksi "${target?.description || ''}"?`)) return;
+
     const ids = [id];
     if (id.startsWith('kt-') && target?.linkedTransactionId) ids.push(target.linkedTransactionId);
+
     try {
       await Promise.all(ids.map(x => apiDeleteTransaction(x)));
       setTransactions(prev => prev.filter(t => !ids.includes(t.id)));
@@ -636,44 +709,97 @@ export default function App() {
         </div>
       )}
 
-      {/* Main Content View matching screenshot with flexible width */}
+            {/* Main Content View */}
       <main className="flex-1 w-full max-w-md sm:max-w-lg md:max-w-xl mx-auto px-3 sm:px-4 py-5 sm:py-8">
-        <DompetTokoView
-          accounts={accounts}
-          transactions={transactions}
-          stats={stats}
-          neonConfig={neonConfig}
-          onAddTransaction={handleSaveTransaction}
-          onTransfer={handleTransfer}
-          onTransferCategory={handleTransferCategory}
-          onUndoLast={handleUndoLast}
-          onDeleteTransaction={handleDeleteTransaction}
-          onEditTransaction={handleEditTransaction}
-          onOpenAutoRecord={() => setIsAutoRecordOpen(true)}
-          onOpenNeonModal={handleOpenNeonModal}
-          onOpenExportImport={handleOpenExportImport}
-          categories={categories}
-          onAddCategory={handleAddCategory}
-          onDeleteCategory={handleDeleteCategory}
-          filter={filter}
-          onFilterChange={(newF) => setFilter(prev => ({ ...prev, ...newF }))}
-          monthOptions={monthOptions}
-          isAdmin={isAdmin}
-          onOpenAdminModal={() => setIsAdminModalOpen(true)}
-          onLogoutAdmin={handleLogoutAdmin}
-          storeName={storeName}
-        />
+        {mainView === 'dompet' && (
+          <DompetTokoView
+            accounts={accounts}
+            transactions={transactions}
+            stats={stats}
+            neonConfig={neonConfig}
+            onAddTransaction={handleSaveTransaction}
+            onTransfer={handleTransfer}
+            onTransferCategory={handleTransferCategory}
+            onUndoLast={handleUndoLast}
+            onDeleteTransaction={handleDeleteTransaction}
+            onEditTransaction={handleEditTransaction}
+            onOpenAutoRecord={() => setIsAutoRecordOpen(true)}
+            onOpenNeonModal={handleOpenNeonModal}
+            onOpenExportImport={handleOpenExportImport}
+            categories={categories}
+            onAddCategory={handleAddCategory}
+            onDeleteCategory={handleDeleteCategory}
+            filter={filter}
+            onFilterChange={(newF) => setFilter(prev => ({ ...prev, ...newF }))}
+            monthOptions={monthOptions}
+            isAdmin={isAdmin}
+            onOpenAdminModal={() => setIsAdminModalOpen(true)}
+            onLogoutAdmin={handleLogoutAdmin}
+            storeName={storeName}
+          />
+        )}
+
+        {mainView === 'utang' && (
+          <UtangPiutangView
+            debts={debts}
+            accounts={accounts}
+            isAdmin={isAdmin}
+            onAddDebt={handleAddDebt}
+            onUpdateDebt={handleUpdateDebt}
+            onDeleteDebt={handleDeleteDebt}
+            onAddPayment={handleAddDebtPayment}
+            onDeletePayment={handleDeleteDebtPayment}
+          />
+        )}
       </main>
 
+      {/* Bottom Navigation */}
+      <div className="sticky bottom-0 z-30 bg-white/95 backdrop-blur-sm border-t border-slate-200 shadow-lg">
+        <div className="max-w-md sm:max-w-lg md:max-w-xl mx-auto grid grid-cols-2">
+          <button
+            type="button"
+            onClick={() => setMainView('dompet')}
+            className={`flex flex-col items-center justify-center gap-0.5 py-2.5 transition cursor-pointer ${
+              mainView === 'dompet'
+                ? 'text-[#1e3a5f]'
+                : 'text-slate-400 hover:text-slate-600'
+            }`}
+          >
+            <Wallet className="w-5 h-5" />
+            <span className="text-[10px] font-bold">Dompet Toko</span>
+            {mainView === 'dompet' && (
+              <span className="absolute bottom-0 w-12 h-0.5 bg-[#1e3a5f] rounded-full" />
+            )}
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setMainView('utang')}
+            className={`flex flex-col items-center justify-center gap-0.5 py-2.5 transition cursor-pointer relative ${
+              mainView === 'utang'
+                ? 'text-[#1e3a5f]'
+                : 'text-slate-400 hover:text-slate-600'
+            }`}
+          >
+            <CreditCard className="w-5 h-5" />
+            <span className="text-[10px] font-bold">Utang & Piutang</span>
+            {mainView === 'utang' && (
+              <span className="absolute bottom-0 w-12 h-0.5 bg-[#1e3a5f] rounded-full" />
+            )}
+          </button>
+        </div>
+      </div>
+
+      
+
       {/* MODALS */}
-      {/* 1. Auto Record Modal (Smart Parsing, SMS, AI Struk) */}
+      {/* 1. Auto Record Modal (AI: teks & foto struk) */}
       <AutoRecordModal
         isOpen={isAutoRecordOpen}
         onClose={() => setIsAutoRecordOpen(false)}
         onAddTransactions={handleAddTransactions}
         accounts={accounts}
         categories={categories}
-        onAddCategory={handleAddCategory}
       />
 
       {/* 2. Neon PostgreSQL & Vercel Deploy Modal */}
@@ -702,37 +828,11 @@ export default function App() {
         transactions={transactions}
         filteredTransactions={filteredTransactions}
         accounts={accounts}
-        categories={categories}
-        onImportTransactions={async (imported, newAccounts, newCategories) => {
+        onImportTransactions={async (imported) => {
           try {
-            // 1. Simpan akun baru otomatis jika ada di file Excel (mis. BRI, BCA)
-            if (newAccounts && newAccounts.length > 0) {
-              for (const acc of newAccounts) {
-                await apiSaveAccount(acc);
-              }
-              setAccounts(prev => {
-                const existingIds = new Set(prev.map(a => a.id));
-                const toAdd = newAccounts.filter(a => !existingIds.has(a.id));
-                return [...prev, ...toAdd];
-              });
-            }
-
-            // 2. Simpan kategori baru otomatis jika ada di file Excel
-            if (newCategories && newCategories.length > 0) {
-              for (const cat of newCategories) {
-                await apiAddCategory(cat);
-              }
-              setCategories(prev => Array.from(new Set([...prev, ...newCategories])));
-            }
-
-            // 3. Simpan transaksi
             await apiSaveTransactions(imported);
             setTransactions(prev => [...imported, ...prev]);
-
-            const accInfo = newAccounts && newAccounts.length > 0
-              ? ` & ${newAccounts.length} akun baru (${newAccounts.map(a => a.name).join(', ')}) otomatis dibuat!`
-              : '!';
-            showToast(`${imported.length} transaksi berhasil diimpor${accInfo}`);
+            showToast(`${imported.length} transaksi berhasil diimpor!`);
           } catch (e) {
             console.error(e);
             showToast('Gagal mengimpor transaksi ke database.', 'error');

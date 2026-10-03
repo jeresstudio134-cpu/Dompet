@@ -118,7 +118,7 @@ function buildAiPrompt(accounts: any[], categories: string[], today: string, has
     'DAFTAR AKUN (accountId HARUS salah satu id ini):',
     accountList,
     '',
-    'DAFTAR KATEGORI (tulis persis seperti di daftar; jika tidak ada yang cocok, isi string kosong ""):',
+    'DAFTAR KATEGORI (prioritaskan dari daftar ini jika sesuai; jika transaksi memiliki konteks spesifik seperti "Angsur Tanah", "Cicilan", "Sewa", "Gaji", dll., kamu BOLEH membuat kategori baru yang singkat dan jelas 1-3 kata):',
     categoryList,
     hints ? `\nKebiasaan pengguna (kata kunci -> kategori):\n${hints}` : '',
     '',
@@ -490,12 +490,18 @@ export default async function handler(req: any, res: any) {
               accountIdSet.has(it?.transferToAccountId) && it.transferToAccountId !== accountId
                 ? it.transferToAccountId
                 : '';
+            const rawCat = String(it?.category || '').trim();
+            const matchedCat = catMap.get(rawCat.toLowerCase());
+            const finalCat = toId
+              ? 'Pindah Saldo'
+              : (matchedCat || (rawCat.length > 0 && rawCat.length <= 50 ? rawCat : ''));
+
             return {
               date: /^\d{4}-\d{2}-\d{2}$/.test(String(it?.date || '')) ? it.date : today,
               description: String(it?.description || '').trim().slice(0, 255) || 'Transaksi',
               accountId,
               type: toId ? 'keluar' : it?.type === 'masuk' ? 'masuk' : 'keluar',
-              category: toId ? 'Pindah Saldo' : catMap.get(String(it?.category || '').toLowerCase()) || '',
+              category: finalCat,
               amount: Math.round(Number(it?.amount) || 0),
               transferToAccountId: toId,
             };
@@ -629,6 +635,11 @@ export default async function handler(req: any, res: any) {
         }
 
         for (const tx of batchTx) {
+          const cat = String(tx.category || '').trim();
+          if (cat && cat !== 'Pindah Saldo' && cat.length <= 50) {
+            await sql`INSERT INTO categories (name) VALUES (${cat}) ON CONFLICT (name) DO NOTHING;`;
+          }
+
           await sql`
             INSERT INTO transactions (
               id, no, date, description, account_id, type, category, amount, notes, transfer_target_account_id, linked_transaction_id, created_at
@@ -676,6 +687,11 @@ export default async function handler(req: any, res: any) {
         // Kasir hanya boleh menambah transaksi baru
         const exists = await sql`SELECT 1 FROM transactions WHERE id = ${txId} LIMIT 1`;
         if (exists.length > 0) return denyAdmin();
+      }
+
+      const singleCat = String(category || '').trim();
+      if (singleCat && singleCat !== 'Pindah Saldo' && singleCat.length <= 50) {
+        await sql`INSERT INTO categories (name) VALUES (${singleCat}) ON CONFLICT (name) DO NOTHING;`;
       }
 
       await sql`

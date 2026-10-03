@@ -1,5 +1,6 @@
 import { Transaction, Account } from '../types/finance.ts';
 import { INITIAL_ACCOUNTS, INITIAL_CATEGORIES, INITIAL_TRANSACTIONS } from '../data/initialData.ts';
+import type { Debt, DebtPayment } from '../types/finance.ts';
 
 const API_URL = '/api/transactions';
 const TOKEN_KEY = 'dompet_admin_token';
@@ -427,5 +428,133 @@ export const apiAiParse = async (payload: {
       throw new Error('Waktu pemrosesan AI habis (>60 detik). Coba gunakan foto yang lebih terang atau ketik di tab teks.');
     }
     throw err;
+  }
+};
+
+// ============================================
+// API UTANG & PIUTANG
+// ============================================
+
+const DEBTS_API_URL = '/api/debts';
+const LOCAL_DEBTS_KEY = 'dompet_pintar_debts';
+
+// Helper LocalStorage untuk fallback offline
+function getLocalDebts(): Debt[] {
+  try {
+    const stored = localStorage.getItem(LOCAL_DEBTS_KEY);
+    if (stored) {
+      const parsed = JSON.parse(stored);
+      if (Array.isArray(parsed)) return parsed;
+    }
+  } catch (e) {
+    console.warn('Error reading local debts:', e);
+  }
+  return [];
+}
+
+function saveLocalDebts(debts: Debt[]) {
+  try {
+    localStorage.setItem(LOCAL_DEBTS_KEY, JSON.stringify(debts));
+  } catch (e) {
+    console.warn('Error saving local debts:', e);
+  }
+}
+
+// Muat semua utang-piutang (server first, fallback lokal)
+export const apiLoadDebts = async (): Promise<Debt[]> => {
+  const localDebts = getLocalDebts();
+
+  try {
+    const json = await safeRequest(DEBTS_API_URL);
+    if (json && json.success && Array.isArray(json.debts)) {
+      const serverDebts = json.debts as Debt[];
+      // Simpan salinan lokal agar cepat & offline-ready
+      saveLocalDebts(serverDebts);
+      return serverDebts;
+    }
+  } catch (err) {
+    console.warn('Gagal memuat utang dari server, pakai local:', err);
+  }
+
+  return localDebts;
+};
+
+// Simpan (create/update) utang-piutang
+export const apiSaveDebt = async (debt: Debt): Promise<void> => {
+  // Update localStorage dulu (optimistic)
+  const current = getLocalDebts();
+  const exists = current.some(d => d.id === debt.id);
+  const updated = exists
+    ? current.map(d => (d.id === debt.id ? debt : d))
+    : [debt, ...current];
+  saveLocalDebts(updated);
+
+  // Kirim ke server (kalau gagal, data tetap aman di local)
+  try {
+    await safeRequest(DEBTS_API_URL, {
+      method: 'POST',
+      body: JSON.stringify({ action: 'saveDebt', payload: debt }),
+    });
+  } catch (err) {
+    console.warn('Gagal sinkron saveDebt ke server:', err);
+  }
+};
+
+// Hapus utang-piutang
+export const apiDeleteDebt = async (id: string): Promise<void> => {
+  const current = getLocalDebts();
+  saveLocalDebts(current.filter(d => d.id !== id));
+
+  try {
+    await safeRequest(DEBTS_API_URL, {
+      method: 'POST',
+      body: JSON.stringify({ action: 'deleteDebt', payload: { id } }),
+    });
+  } catch (err) {
+    console.warn('Gagal sinkron deleteDebt ke server:', err);
+  }
+};
+
+// Simpan pembayaran/angsuran
+export const apiSaveDebtPayment = async (payment: DebtPayment): Promise<void> => {
+  // Update lokal dulu
+  const current = getLocalDebts();
+  const updated = current.map(d => {
+    if (d.id !== payment.debtId) return d;
+    const payments = d.payments || [];
+    const exists = payments.some(p => p.id === payment.id);
+    const newPayments = exists
+      ? payments.map(p => (p.id === payment.id ? payment : p))
+      : [...payments, payment];
+    return { ...d, payments: newPayments };
+  });
+  saveLocalDebts(updated);
+
+  try {
+    await safeRequest(DEBTS_API_URL, {
+      method: 'POST',
+      body: JSON.stringify({ action: 'savePayment', payload: payment }),
+    });
+  } catch (err) {
+    console.warn('Gagal sinkron savePayment ke server:', err);
+  }
+};
+
+// Hapus pembayaran
+export const apiDeleteDebtPayment = async (paymentId: string): Promise<void> => {
+  const current = getLocalDebts();
+  const updated = current.map(d => ({
+    ...d,
+    payments: (d.payments || []).filter(p => p.id !== paymentId),
+  }));
+  saveLocalDebts(updated);
+
+  try {
+    await safeRequest(DEBTS_API_URL, {
+      method: 'POST',
+      body: JSON.stringify({ action: 'deletePayment', payload: { id: paymentId } }),
+    });
+  } catch (err) {
+    console.warn('Gagal sinkron deletePayment ke server:', err);
   }
 };

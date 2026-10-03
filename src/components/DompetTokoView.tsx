@@ -12,14 +12,13 @@ import {
   ShieldCheck,
   Edit2,
   X,
-  Check,
-  ArrowUpDown, // Tambahan icon untuk sorting
-  ChevronDown
+  ArrowUpDown,
+  ChevronDown,
+  Check // <--- Tambahkan ini
 } from 'lucide-react';
 import confetti from 'canvas-confetti';
 import { Transaction, Account, TransactionType, FilterState, MonthlyStats, NeonConfig } from '../types/finance.ts';
 import { formatRupiah, getCurrentDateIndo, formatTanggalIndo, parseRupiahInput } from '../utils/formatters.ts';
-import { exportDirectToExcel } from '../utils/excelExport.ts';
 
 // Pindah kategori disimpan sebagai dua baris berawalan "kt-":
 // keluar dari kategori asal dan masuk ke kategori tujuan, di akun yang sama (saldo akun tidak berubah)
@@ -103,7 +102,10 @@ export const DompetTokoView: React.FC<DompetTokoViewProps> = ({
   const [editCatatan, setEditCatatan] = useState('');
 
   const handleStartEdit = (tx: Transaction) => {
-    if (isCatTransfer(tx)) return;
+    if (isCatTransfer(tx)) {
+      alert('Pindah kategori tidak bisa diedit. Hapus lalu buat ulang dengan nominal yang benar.');
+      return;
+    }
     setEditingTx(tx);
     setEditDate(tx.date);
     setEditKeterangan(tx.description);
@@ -144,7 +146,7 @@ export const DompetTokoView: React.FC<DompetTokoViewProps> = ({
   const [jenis, setJenis] = useState<TransactionType>('keluar');
   const [selectedAkun, setSelectedAkun] = useState<string>('cash');
   const [keterangan, setKeterangan] = useState<string>('');
-  const [nominalStr, setNominalStr] = useState<string>('0');
+  const [nominalStr, setNominalStr] = useState<string>('');
   const [kategori, setKategori] = useState<string>('');
 
   // State for adding new category & managing/deleting categories
@@ -155,7 +157,7 @@ export const DompetTokoView: React.FC<DompetTokoViewProps> = ({
   // Form states for 'Pindah Saldo'
   const [transferDari, setTransferDari] = useState<string>('seabank');
   const [transferKe, setTransferKe] = useState<string>('cash');
-  const [transferNominalStr, setTransferNominalStr] = useState<string>('0');
+  const [transferNominalStr, setTransferNominalStr] = useState<string>('');
   const [transferKeterangan, setTransferKeterangan] = useState<string>('');
 
   // Form states for 'Pindah Kategori'
@@ -163,7 +165,7 @@ export const DompetTokoView: React.FC<DompetTokoViewProps> = ({
   const [ktDari, setKtDari] = useState<string>('');
   const [ktKe, setKtKe] = useState<string>('');
   const [ktAkun, setKtAkun] = useState<string>('');
-  const [ktNominalStr, setKtNominalStr] = useState<string>('0');
+  const [ktNominalStr, setKtNominalStr] = useState<string>('');
   const [ktKeterangan, setKtKeterangan] = useState<string>('');
 
   // Auto-sync account selections if accounts are added/edited/deleted
@@ -182,35 +184,19 @@ export const DompetTokoView: React.FC<DompetTokoViewProps> = ({
     }
   }, [accounts, selectedAkun, transferDari, transferKe]);
 
-  // Quick smart suggestion detection when typing keterangan
+  
+    
+   // Hanya menyimpan input keterangan tanpa auto-detect apapun
   const handleKeteranganChange = (val: string) => {
     setKeterangan(val);
-    const lower = val.toLowerCase();
+  };   
+
     
-    // Auto-detect account
-    if (lower.includes('cash') || lower.includes('tunai')) setSelectedAkun('cash');
-    else if (lower.includes('dana')) setSelectedAkun('dana');
-    else if (lower.includes('seabank')) setSelectedAkun('seabank');
-    else if (lower.includes('shopee') || lower.includes('spay')) setSelectedAkun('shoopepay');
-
-    // Auto-detect type
-    if (lower.includes('pemasukan') || lower.includes('masuk') || lower.includes('omset') || lower.includes('laba')) {
-      setJenis('masuk');
-    }
-
-    // Auto-detect category
-    if (lower.includes('toko') || lower.includes('pemasukan toko')) setKategori('Toko');
-    else if (lower.includes('bensin') || lower.includes('pertalite') || lower.includes('servis')) setKategori('Kendaraan');
-    else if (lower.includes('bakso') || lower.includes('bubur') || lower.includes('jajan') || lower.includes('makan')) setKategori('Pribadi');
-    else if (lower.includes('wifi') || lower.includes('listrik') || lower.includes('sembako') || lower.includes('pokok')) setKategori('Pokok');
-    else if (lower.includes('semen') || lower.includes('bangun rumah') || lower.includes('bor') || lower.includes('palet')) setKategori('Bangun Rumah');
-    else if (lower.includes('abah rahmadi')) setKategori('Abah Rahmadi');
-  };
 
   const handleNominalChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const raw = e.target.value.replace(/\D/g, '');
     if (!raw) {
-      setNominalStr('0');
+      setNominalStr('');
       return;
     }
     const num = parseInt(raw, 10);
@@ -220,7 +206,7 @@ export const DompetTokoView: React.FC<DompetTokoViewProps> = ({
   const handleTransferNominalChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const raw = e.target.value.replace(/\D/g, '');
     if (!raw) {
-      setTransferNominalStr('0');
+      setTransferNominalStr('');
       return;
     }
     const num = parseInt(raw, 10);
@@ -342,28 +328,6 @@ export const DompetTokoView: React.FC<DompetTokoViewProps> = ({
 
   // Filter pagination limit
   const [filterDisplayCount, setFilterDisplayCount] = useState<number>(30);
-  const [isExportingDirect, setIsExportingDirect] = useState<boolean>(false);
-
-  // Unduh langsung hasil filter ke format Excel (.xls) tanpa popup modal
-  const handleDirectExportFilter = () => {
-    if (!isAdmin) {
-      onOpenAdminModal();
-      return;
-    }
-    if (filteredList.length === 0) {
-      return;
-    }
-    setIsExportingDirect(true);
-    try {
-      const todayStr = new Date().toISOString().split('T')[0];
-      const filename = `dompet_toko_filter_${todayStr}.xls`;
-      exportDirectToExcel(filteredList, accounts, filename);
-      setTimeout(() => setIsExportingDirect(false), 2500);
-    } catch (e) {
-      console.error('Export direct error:', e);
-      setIsExportingDirect(false);
-    }
-  };
 
   // Satu aturan filter dipakai bersama oleh daftar transaksi dan kedua rekap.
   // skip: abaikan satu filter supaya rekapnya tetap menampilkan semua pilihan (akun atau kategori)
@@ -413,7 +377,10 @@ export const DompetTokoView: React.FC<DompetTokoViewProps> = ({
       .sort((a, b) => b.masuk + b.keluar + Math.abs(b.pindah) - (a.masuk + a.keluar + Math.abs(a.pindah)));
   })();
 
-  const saldoAwalAkun = accounts.reduce((sum, a) => sum + (a.initialBalance || 0), 0);
+  // Selisih antara total akun dan total kantong (mis. saldo awal akun yang belum punya kantong)
+  const totalAkun = accounts.reduce((sum, a) => sum + (stats.accountBalances[a.id] ?? 0), 0);
+  const totalKantong = pockets.reduce((sum, p) => sum + p.saldo, 0);
+  const diluarKantong = totalAkun - totalKantong;
 
   // Rekap per kantong (kategori): ikut semua filter kecuali filter kategori
   const categoryRecap = (() => {
@@ -686,15 +653,19 @@ export const DompetTokoView: React.FC<DompetTokoViewProps> = ({
               </button>
             ))}
 
-            {saldoAwalAkun > 0 && (
-              <div className="bg-slate-50 rounded-xl border border-dashed border-slate-300 p-3">
-                <div className="text-[11px] font-medium text-slate-500 leading-tight">Saldo awal akun</div>
-                <div className="text-sm font-bold tracking-tight mt-0.5 text-slate-600">
-                  {formatRupiah(saldoAwalAkun)}
+                        {diluarKantong !== 0 && (
+                <div className={diluarKantong < 0 ? 'rounded-xl border border-dashed p-3 bg-rose-50/60 border-rose-300' : 'rounded-xl border border-dashed p-3 bg-slate-50 border-slate-300'}>
+                  <div className={diluarKantong < 0 ? 'text-[11px] font-bold leading-tight text-rose-700' : 'text-[11px] font-bold leading-tight text-slate-600'}>
+                    {diluarKantong < 0 ? 'Tidak Sinkron Akun dan Kantong' : 'Di Luar Kantong'}
+                  </div>
+                  <div className={diluarKantong < 0 ? 'text-sm font-bold tracking-tight mt-0.5 text-rose-800' : 'text-sm font-bold tracking-tight mt-0.5 text-slate-600'}>
+                    {diluarKantong < 0 ? '-' : '+'}{formatRupiah(Math.abs(diluarKantong))}
+                  </div>
+                  <div className={diluarKantong < 0 ? 'text-[10px] mt-0.5 leading-snug text-rose-600' : 'text-[10px] mt-0.5 leading-snug text-slate-400'}>
+                    {diluarKantong < 0 ? 'Cek data nominal & transaksi pindah' : 'Saldo awal akun / belum dialokasikan'}
+                  </div>
                 </div>
-                <div className="text-[10px] text-slate-400 mt-0.5">belum masuk kantong</div>
-              </div>
-            )}
+              )}
           </div>
         </div>
       )}
@@ -816,7 +787,7 @@ export const DompetTokoView: React.FC<DompetTokoViewProps> = ({
               </div>
             </div>
 
-            {/* Akun: 4 Buttons (2x2 Grid) */}
+            {/* Akun */}
             <div>
               <label className="block text-xs font-medium text-slate-700 mb-1">
                 Akun
@@ -851,7 +822,7 @@ export const DompetTokoView: React.FC<DompetTokoViewProps> = ({
                 type="text"
                 required
                 value={keterangan}
-                onChange={(e) => handleKeteranganChange(e.target.value)}
+                onChange={(e) => setKeterangan(e.target.value)}
                 placeholder="mis. Pemasukan Toko"
                 className="w-full bg-white text-slate-800 text-xs sm:text-sm rounded-lg px-3 py-2 border border-slate-300 placeholder-slate-400 focus:outline-none focus:ring-1 focus:ring-[#1e3a5f] focus:border-[#1e3a5f] transition"
               />
@@ -1588,16 +1559,14 @@ export const DompetTokoView: React.FC<DompetTokoViewProps> = ({
                     </div>
                     {isAdmin && (
                       <div className="flex items-center gap-1 shrink-0 pt-0.5">
-                        {!isCatTransfer(t) && (
-                          <button
-                            type="button"
-                            onClick={() => handleStartEdit(t)}
-                            className="p-1 text-slate-400 hover:text-[#1e3a5f] hover:bg-slate-100 rounded-md transition cursor-pointer"
-                            title="Edit Transaksi (Admin)"
-                          >
-                            <Edit2 className="w-3.5 h-3.5" />
-                          </button>
-                        )}
+                        <button
+                          type="button"
+                          onClick={() => handleStartEdit(t)}
+                          className="p-1 text-slate-400 hover:text-[#1e3a5f] hover:bg-slate-100 rounded-md transition cursor-pointer"
+                          title="Edit Transaksi (Admin)"
+                        >
+                          <Edit2 className="w-3.5 h-3.5" />
+                        </button>
                         <button
                           type="button"
                           onClick={() => onDeleteTransaction(t.id)}
@@ -1634,26 +1603,11 @@ export const DompetTokoView: React.FC<DompetTokoViewProps> = ({
             )}
 
             <button
-              type="button"
-              onClick={handleDirectExportFilter}
-              disabled={isExportingDirect}
-              className={`w-full py-2.5 rounded-lg font-bold flex items-center justify-center gap-1.5 transition cursor-pointer shadow-xs active:scale-[0.99] ${
-                isExportingDirect
-                  ? 'bg-emerald-700 text-white'
-                  : 'bg-slate-800 hover:bg-slate-900 text-white'
-              }`}
+              onClick={onOpenExportImport}
+              className="w-full py-2.5 rounded-lg bg-slate-800 hover:bg-slate-900 text-white font-bold flex items-center justify-center gap-1.5 transition cursor-pointer"
             >
-              {isExportingDirect ? (
-                <>
-                  <Check className="w-4 h-4 text-white" />
-                  <span>File Excel Berhasil Diunduh!</span>
-                </>
-              ) : (
-                <>
-                  {isAdmin ? <Download className="w-3.5 h-3.5 text-emerald-400" /> : <Lock className="w-3.5 h-3.5 text-amber-300" />}
-                  <span>{isAdmin ? `Ekspor ${filteredList.length} Transaksi Langsung ke Excel` : 'Ekspor Hasil Filter ke Excel (Perlu PIN Admin)'}</span>
-                </>
-              )}
+              {isAdmin ? <Download className="w-3.5 h-3.5" /> : <Lock className="w-3.5 h-3.5 text-amber-300" />}
+              <span>{isAdmin ? 'Ekspor Hasil Filter ke Excel' : 'Ekspor Hasil Filter ke Excel (Perlu PIN Admin)'}</span>
             </button>
 
           </div>
