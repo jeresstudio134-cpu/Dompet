@@ -117,6 +117,10 @@ export default function App() {
     dateTo: '',
   });
 
+  const [sortOrder, setSortOrder] = useState<
+    'newest' | 'oldest'
+  >('newest');
+
     // Handler: Add Account (Admin)
   const handleAddAccount = async (newAcc: { name: string; type: 'cash' | 'bank' | 'ewallet'; initialBalance?: number }) => {
     const slug = newAcc.name.toLowerCase().trim().replace(/[^a-z0-9]/g, '_');
@@ -359,6 +363,26 @@ export default function App() {
       return true;
     });
   }, [transactions, filter]);
+
+   const sortedTransactions = useMemo(() => {
+  return [...filteredTransactions].sort((a, b) => {
+    const dateCompare = a.date.localeCompare(b.date);
+
+    if (dateCompare !== 0) {
+      return sortOrder === 'newest'
+        ? -dateCompare
+        : dateCompare;
+    }
+
+    // Jika tanggal sama, gunakan waktu pencatatan
+    const timeA = a.createdAt || '';
+    const timeB = b.createdAt || '';
+
+    return sortOrder === 'newest'
+      ? timeB.localeCompare(timeA)
+      : timeA.localeCompare(timeB);
+  });
+}, [filteredTransactions, sortOrder]);
 
     const getNextNo = () =>
     (transactions.length > 0 ? Math.max(...transactions.map(t => t.no || 0)) : 0) + 1;
@@ -649,6 +673,7 @@ export default function App() {
         onAddTransactions={handleAddTransactions}
         accounts={accounts}
         categories={categories}
+        onAddCategory={handleAddCategory}
       />
 
       {/* 2. Neon PostgreSQL & Vercel Deploy Modal */}
