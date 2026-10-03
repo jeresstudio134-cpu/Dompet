@@ -301,9 +301,14 @@ export default async function handler(req: any, res: any) {
         const categoryNames: string[] = catRows.map((c: any) => c.name);
         const today = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Jakarta' });
 
-        const parts: any[] = [{ text: buildAiPrompt(accRows, categoryNames, today, Boolean(imageBase64)) }];
-        if (text.trim()) parts.push({ text: `TEKS INPUT:\n${text}` });
-        if (imageBase64) parts.push({ inlineData: { mimeType, data: imageBase64 } });
+        const parts: any[] = [];
+        if (imageBase64) {
+          parts.push({ inlineData: { mimeType, data: imageBase64 } });
+        }
+        parts.push({ text: buildAiPrompt(accRows, categoryNames, today, Boolean(imageBase64)) });
+        if (text.trim()) {
+          parts.push({ text: `TEKS INPUT:\n${text}` });
+        }
 
         const responseSchema = {
           type: 'ARRAY',
@@ -365,8 +370,12 @@ export default async function handler(req: any, res: any) {
                 },
               });
 
-              if (aiRes && aiRes.text) {
-                raw = aiRes.text;
+              const textVal =
+                aiRes?.text ||
+                (aiRes?.candidates?.[0]?.content?.parts || []).map((p: any) => p.text || '').join('');
+
+              if (textVal) {
+                raw = textVal;
                 break;
               }
             } catch (sdkErr: any) {
@@ -379,7 +388,7 @@ export default async function handler(req: any, res: any) {
           console.error('SDK init error:', sdkInitErr);
         }
 
-        // Metode 2: Fallback ke REST API (mengirimkan auth key via header dan query parameter)
+        // Metode 2: Fallback ke REST API (otentikasi murni via x-goog-api-key & query param ?key=)
         if (!raw) {
           for (const modelToTry of candidateModels) {
             const controller = new AbortController();
@@ -389,9 +398,6 @@ export default async function handler(req: any, res: any) {
                 'Content-Type': 'application/json',
                 'x-goog-api-key': apiKey,
               };
-              if (apiKey.startsWith('AQ.')) {
-                headers['Authorization'] = `Bearer ${apiKey}`;
-              }
 
               const restUrl = `https://generativelanguage.googleapis.com/v1beta/models/${modelToTry}:generateContent?key=${encodeURIComponent(apiKey)}`;
               const gRes = await fetch(restUrl, {
