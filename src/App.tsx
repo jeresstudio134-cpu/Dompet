@@ -53,12 +53,6 @@ export default function App() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [loadSlow, setLoadSlow] = useState<boolean>(false);
 
-  // Sinkronkan title browser agar selalu konsisten dengan nama toko dan tidak glitch saat cold start
-  useEffect(() => {
-    const titleText = storeName && storeName.trim() ? `${storeName.trim()} - Dompet Keuangan` : 'JERES STUDIO - Dompet Keuangan';
-    document.title = titleText;
-  }, [storeName]);
-
   const handleUpdateStoreName = async (newName: string): Promise<boolean> => {
     const trimmed = newName.trim() || 'Dompet Toko';
     try {
