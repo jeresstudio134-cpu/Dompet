@@ -12,7 +12,9 @@ import {
   ShieldCheck,
   Edit2,
   X,
-  Check
+  Check,
+  ArrowUpDown, // Tambahan icon untuk sorting
+  ChevronDown
 } from 'lucide-react';
 import confetti from 'canvas-confetti';
 import { Transaction, Account, TransactionType, FilterState, MonthlyStats, NeonConfig } from '../types/finance.ts';
@@ -85,6 +87,10 @@ export const DompetTokoView: React.FC<DompetTokoViewProps> = ({
 
   // Tabs: 'catat' | 'pindah' | 'filter'
   const [activeTab, setActiveTab] = useState<'catat' | 'pindah' | 'filter'>('catat');
+
+  // Sorting state untuk Riwayat Transaksi
+  const [sortOrder, setSortOrder] = useState<'desc' | 'asc'>('desc');
+  const [sortDropdownOpen, setSortDropdownOpen] = useState(false);
 
   // Editing state for Admin
   const [editingTx, setEditingTx] = useState<Transaction | null>(null);
@@ -541,6 +547,19 @@ export const DompetTokoView: React.FC<DompetTokoViewProps> = ({
   const getAccountName = (id: string) => {
     return accounts.find(a => a.id === id)?.name || id;
   };
+
+  // Urutkan transaksi untuk riwayat
+  const sortedTransactions = React.useMemo(() => {
+    return [...transactions].sort((a, b) => {
+      const dateA = new Date(a.date).getTime();
+      const dateB = new Date(b.date).getTime();
+      // Jika tanggal sama, urutkan berdasarkan ID (asumsi ID berurutan)
+      if (dateA === dateB) {
+        return sortOrder === 'desc' ? b.id.localeCompare(a.id) : a.id.localeCompare(b.id);
+      }
+      return sortOrder === 'desc' ? dateB - dateA : dateA - dateB;
+    });
+  }, [transactions, sortOrder]);
 
   return (
     <div className="w-full space-y-3.5">
@@ -1644,15 +1663,71 @@ export const DompetTokoView: React.FC<DompetTokoViewProps> = ({
 
       {/* RIWAYAT TRANSAKSI Card (Scrollable container agar halaman tidak panjang) */}
       <div className="bg-white rounded-2xl border border-slate-200/90 p-4 shadow-xs space-y-2.5">
-        <div className="pb-2 border-b border-slate-100">
+        <div className="pb-2 border-b border-slate-100 flex items-center justify-between relative z-10">
           <h2 className="text-[11px] font-bold text-slate-700 uppercase tracking-wider">
             RIWAYAT TRANSAKSI ({transactions.length})
           </h2>
+          
+          {/* Dropdown Sorting Modern & Rounded */}
+          <div className="relative">
+            <button
+              type="button"
+              onClick={() => setSortDropdownOpen(!sortDropdownOpen)}
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-50 border border-slate-200 rounded-full text-[11px] font-semibold text-slate-700 hover:bg-slate-100 transition cursor-pointer shadow-2xs"
+            >
+              <ArrowUpDown className="w-3.5 h-3.5 text-slate-500" />
+              <span>{sortOrder === 'desc' ? 'Terbaru' : 'Terlama'}</span>
+              <ChevronDown className={`w-3.5 h-3.5 text-slate-500 transition-transform ${sortDropdownOpen ? 'rotate-180' : ''}`} />
+            </button>
+
+            {/* Dropdown Menu */}
+            {sortDropdownOpen && (
+              <>
+                {/* Backdrop untuk menutup dropdown saat klik di luar */}
+                <div 
+                  className="fixed inset-0 z-40" 
+                  onClick={() => setSortDropdownOpen(false)}
+                />
+                <div className="absolute right-0 mt-2 w-48 bg-white rounded-2xl shadow-xl border border-slate-100 py-1.5 z-50 animate-in fade-in zoom-in-95 duration-100 origin-top-right">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSortOrder('desc');
+                      setSortDropdownOpen(false);
+                    }}
+                    className={`w-full text-left px-4 py-2.5 text-xs font-medium transition flex items-center justify-between ${
+                      sortOrder === 'desc' 
+                        ? 'bg-amber-50 text-amber-900' 
+                        : 'text-slate-700 hover:bg-slate-50'
+                    }`}
+                  >
+                    <span>Terbaru</span>
+                    {sortOrder === 'desc' && <Check className="w-3.5 h-3.5 text-amber-700" />}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSortOrder('asc');
+                      setSortDropdownOpen(false);
+                    }}
+                    className={`w-full text-left px-4 py-2.5 text-xs font-medium transition flex items-center justify-between ${
+                      sortOrder === 'asc' 
+                        ? 'bg-amber-50 text-amber-900' 
+                        : 'text-slate-700 hover:bg-slate-50'
+                    }`}
+                  >
+                    <span>Terlama</span>
+                    {sortOrder === 'asc' && <Check className="w-3.5 h-3.5 text-amber-700" />}
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
         </div>
 
         {/* Scrollable Transaction History Items */}
         <div className="max-h-[380px] overflow-y-auto divide-y divide-slate-100 overscroll-contain [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden">
-          {transactions.map(tx => {
+          {sortedTransactions.map(tx => {
             const isMasuk = tx.type === 'masuk';
             const accName = getAccountName(tx.accountId);
             const dateStr = formatTanggalIndo(tx.date, true);
