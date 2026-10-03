@@ -11,11 +11,13 @@ import {
   Lock,
   ShieldCheck,
   Edit2,
-  X
+  X,
+  Check
 } from 'lucide-react';
 import confetti from 'canvas-confetti';
 import { Transaction, Account, TransactionType, FilterState, MonthlyStats, NeonConfig } from '../types/finance.ts';
 import { formatRupiah, getCurrentDateIndo, formatTanggalIndo, parseRupiahInput } from '../utils/formatters.ts';
+import { exportDirectToExcel } from '../utils/excelExport.ts';
 
 // Pindah kategori disimpan sebagai dua baris berawalan "kt-":
 // keluar dari kategori asal dan masuk ke kategori tujuan, di akun yang sama (saldo akun tidak berubah)
@@ -334,6 +336,28 @@ export const DompetTokoView: React.FC<DompetTokoViewProps> = ({
 
   // Filter pagination limit
   const [filterDisplayCount, setFilterDisplayCount] = useState<number>(30);
+  const [isExportingDirect, setIsExportingDirect] = useState<boolean>(false);
+
+  // Unduh langsung hasil filter ke format Excel (.xls) tanpa popup modal
+  const handleDirectExportFilter = () => {
+    if (!isAdmin) {
+      onOpenAdminModal();
+      return;
+    }
+    if (filteredList.length === 0) {
+      return;
+    }
+    setIsExportingDirect(true);
+    try {
+      const todayStr = new Date().toISOString().split('T')[0];
+      const filename = `dompet_toko_filter_${todayStr}.xls`;
+      exportDirectToExcel(filteredList, accounts, filename);
+      setTimeout(() => setIsExportingDirect(false), 2500);
+    } catch (e) {
+      console.error('Export direct error:', e);
+      setIsExportingDirect(false);
+    }
+  };
 
   // Satu aturan filter dipakai bersama oleh daftar transaksi dan kedua rekap.
   // skip: abaikan satu filter supaya rekapnya tetap menampilkan semua pilihan (akun atau kategori)
@@ -1591,11 +1615,26 @@ export const DompetTokoView: React.FC<DompetTokoViewProps> = ({
             )}
 
             <button
-              onClick={onOpenExportImport}
-              className="w-full py-2.5 rounded-lg bg-slate-800 hover:bg-slate-900 text-white font-bold flex items-center justify-center gap-1.5 transition cursor-pointer"
+              type="button"
+              onClick={handleDirectExportFilter}
+              disabled={isExportingDirect}
+              className={`w-full py-2.5 rounded-lg font-bold flex items-center justify-center gap-1.5 transition cursor-pointer shadow-xs active:scale-[0.99] ${
+                isExportingDirect
+                  ? 'bg-emerald-700 text-white'
+                  : 'bg-slate-800 hover:bg-slate-900 text-white'
+              }`}
             >
-              {isAdmin ? <Download className="w-3.5 h-3.5" /> : <Lock className="w-3.5 h-3.5 text-amber-300" />}
-              <span>{isAdmin ? 'Ekspor Hasil Filter ke Excel' : 'Ekspor Hasil Filter ke Excel (Perlu PIN Admin)'}</span>
+              {isExportingDirect ? (
+                <>
+                  <Check className="w-4 h-4 text-white" />
+                  <span>File Excel Berhasil Diunduh!</span>
+                </>
+              ) : (
+                <>
+                  {isAdmin ? <Download className="w-3.5 h-3.5 text-emerald-400" /> : <Lock className="w-3.5 h-3.5 text-amber-300" />}
+                  <span>{isAdmin ? `Ekspor ${filteredList.length} Transaksi Langsung ke Excel` : 'Ekspor Hasil Filter ke Excel (Perlu PIN Admin)'}</span>
+                </>
+              )}
             </button>
 
           </div>

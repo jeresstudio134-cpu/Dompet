@@ -37,15 +37,29 @@ export const ExportImportModal: React.FC<ExportImportModalProps> = ({
 }) => {
   const [activeTab, setActiveTab] = useState<'export' | 'import'>('export');
   const [importStatus, setImportStatus] = useState<{ message: string; isError?: boolean } | null>(null);
+  const [includeCatTransfers, setIncludeCatTransfers] = useState<boolean>(true);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   if (!isOpen) return null;
 
   const exportList = filteredTransactions !== undefined ? filteredTransactions : transactions;
   const isFiltered = filteredTransactions !== undefined && filteredTransactions.length !== transactions.length;
-  const [includeCatTransfers, setIncludeCatTransfers] = useState<boolean>(true);
 
   const HEADERS = ['No', 'Tanggal', 'Keterangan', 'Akun', 'Jenis', 'Kategori', 'Nominal', 'Catatan'];
+
+  // Helper untuk memicu download file secara andal di semua browser
+  const triggerDownload = (blob: Blob, filename: string) => {
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.setAttribute('download', filename);
+    document.body.appendChild(link);
+    link.click();
+    setTimeout(() => {
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+    }, 200);
+  };
 
   interface SummaryItem {
     label: string;
@@ -334,13 +348,7 @@ export const ExportImportModal: React.FC<ExportImportModalProps> = ({
 
     const excelHtml = buildExcelXmlHtml(HEADERS, rows, summaryItems, 'Buku Kas Toko');
     const blob = new Blob(['\uFEFF' + excelHtml], { type: 'application/vnd.ms-excel;charset=utf-8;' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.setAttribute('download', `dompet_toko_${new Date().toISOString().split('T')[0]}.xls`);
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
+    triggerDownload(blob, `dompet_toko_${new Date().toISOString().split('T')[0]}.xls`);
   };
 
   // 2. Export to CSV with Excel sep=, directive
@@ -479,13 +487,7 @@ export const ExportImportModal: React.FC<ExportImportModalProps> = ({
     // sep=,\r\n tells Microsoft Excel to explicitly use comma as delimiter
     const csvContent = 'sep=,\r\n' + [csvHeaders.join(','), ...csvRows].join('\r\n');
     const blob = new Blob(['\uFEFF' + csvContent], { type: 'text/csv;charset=utf-8;' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.setAttribute('download', `dompet_toko_${new Date().toISOString().split('T')[0]}.csv`);
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
+    triggerDownload(blob, `dompet_toko_${new Date().toISOString().split('T')[0]}.csv`);
   };
 
   // 3. Export to JSON
@@ -495,13 +497,9 @@ export const ExportImportModal: React.FC<ExportImportModalProps> = ({
       accounts,
       transactions,
     };
-    const jsonString = `data:text/json;charset=utf-8,${encodeURIComponent(JSON.stringify(data, null, 2))}`;
-    const link = document.createElement('a');
-    link.href = jsonString;
-    link.setAttribute('download', `dompet_backup_${new Date().toISOString().split('T')[0]}.json`);
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
+    const jsonString = JSON.stringify(data, null, 2);
+    const blob = new Blob([jsonString], { type: 'application/json;charset=utf-8;' });
+    triggerDownload(blob, `dompet_backup_${new Date().toISOString().split('T')[0]}.json`);
   };
 
   // 4. Download Template Excel (.xls) - DIRECT PER COLUMN IN EXCEL
@@ -514,13 +512,7 @@ export const ExportImportModal: React.FC<ExportImportModalProps> = ({
 
     const excelHtml = buildExcelXmlHtml(HEADERS, sampleRows, undefined, 'Template Impor');
     const blob = new Blob(['\uFEFF' + excelHtml], { type: 'application/vnd.ms-excel;charset=utf-8;' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.setAttribute('download', `template_import_transaksi_toko.xls`);
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
+    triggerDownload(blob, `template_import_transaksi_toko.xls`);
   };
 
   // 5. Download Template CSV (.csv) with sep=,
@@ -534,13 +526,7 @@ export const ExportImportModal: React.FC<ExportImportModalProps> = ({
     // sep=,\r\n tells Microsoft Excel to explicitly use comma as delimiter
     const csvContent = 'sep=,\r\n' + [HEADERS.join(','), ...sampleRows.map(r => r.map(c => `"${c.replace(/"/g, '""')}"`).join(','))].join('\r\n');
     const blob = new Blob(['\uFEFF' + csvContent], { type: 'text/csv;charset=utf-8;' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.setAttribute('download', `template_import_transaksi_toko.csv`);
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
+    triggerDownload(blob, `template_import_transaksi_toko.csv`);
   };
 
   // CSV tokenizer that respects quotes and delimiter
