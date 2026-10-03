@@ -1,5 +1,4 @@
 // api/ai-parse-debt.ts
-import { neon } from '@neondatabase/serverless';
 import { GoogleGenAI } from '@google/genai';
 
 export const config = { maxDuration: 60 };
@@ -33,26 +32,33 @@ function extractJSON(raw: string): any | null {
 
 function buildDebtPrompt(today: string, hasImage: boolean): string {
   return [
-    `Kamu adalah asisten pencatat utang/piutang. Ubah ${hasImage ? 'foto nota/catatan dan/atau teks' : 'teks'} yang diberikan menjadi daftar utang atau piutang.`,
+    `Kamu adalah asisten pencatat utang/piutang. Ubah ${hasImage ? 'foto nota/catatan dan/atau teks' : 'teks'} yang diberikan menjadi daftar utang atau piutang BESERTA riwayat pembayarannya.`,
     '',
     `Tanggal hari ini: ${today} (zona waktu WIB).`,
     '',
-    'ATURAN:',
+    'ATURAN UTANG/PIUTANG:',
     '1. "utang" = saya berutang ke orang lain. "piutang" = orang lain berutang ke saya.',
     '2. totalAmount = bilangan bulat Rupiah tanpa titik/koma. "5jt"=5000000, "500rb"=500000, "1,5jt"=1500000, "Rp 30.000.000"=30000000.',
     '3. name = nama utang/piutang singkat (mis. "Motor Vario", "Angsur Tanah", "Pinjam Ali"). Maks 1-3 kata.',
-    '4. counterparty = nama orang/tempat/bank yang memberi/menerima (mis. "Dealer Honda", "Abah", "Ali"). Boleh kosong.',
+    '4. counterparty = nama orang/tempat/bank (mis. "Dealer Honda", "Abah"). Boleh kosong.',
     '5. startDate = format YYYY-MM-DD. Kalau tidak ada, pakai tanggal hari ini.',
     '6. dueDate = format YYYY-MM-DD, atau null kalau tidak ada jatuh tempo.',
     '7. installmentAmount = cicilan per bulan (angka), atau null.',
     '8. installmentPeriod = jumlah cicilan total (angka), atau null.',
-    '9. notes = catatan tambahan seperti bunga/DP/keterangan lain (string), atau null.',
-    hasImage
-      ? '10. Jika gambar adalah tabel angsuran: baca Total Pinjam sebagai totalAmount, dan Jatuh Tempo sebagai dueDate. Nama diambil dari judul tabel.'
-      : '',
-    '11. Jika tidak ada data yang bisa dibaca, kembalikan array kosong [].',
+    '9. notes = catatan tambahan, atau null.',
     '',
-    'Balas HANYA JSON dengan format: {"debts": [...]}',
+    'ATURAN PEMBAYARAN (payments) - PENTING:',
+    '10. Jika gambar/teks menampilkan TABEL ANGSURAN atau DAFTAR PEMBAYARAN (kolom No, Tanggal, Nama, Pinjam, Bayar), ekstrak SETIAP baris yang punya "Bayar" > 0 ke dalam array "payments".',
+    '11. Setiap payment berisi: { date: "YYYY-MM-DD", amount: number, notes: string }.',
+    '12. Date format YYYY-MM-DD. Konversi tanggal seperti "Jan15/Sen/24" = 2024-01-15, "Feb26/Min/23" = 2023-02-26. Abaikan nama hari (Sen/Min/Rab/Kam/Jum/Sab).',
+    '13. amount = nilai di kolom "Bayar" dalam Rupiah.',
+    '14. notes = keterangan singkat, mis. "Angsuran ke-1".',
+    '15. Jika TIDAK ada tabel pembayaran, isi "payments": [] (array kosong).',
+    hasImage
+      ? '16. Untuk tabel angsuran: baca judul tabel sebagai "name", kolom "Total Pinjam" sebagai totalAmount. Baris yang belum dibayar (kosong di kolom Bayar) diabaikan.'
+      : '',
+    '',
+    'Balas HANYA JSON dengan format: {"debts": [{"...": "...", "payments": [...]}]}',
   ].filter(Boolean).join('\n');
 }
 
@@ -73,8 +79,20 @@ const responseSchema = {
           installmentAmount: { type: 'INTEGER' },
           installmentPeriod: { type: 'INTEGER' },
           notes: { type: 'STRING' },
+          payments: {
+            type: 'ARRAY',
+            items: {
+              type: 'OBJECT',
+              properties: {
+                date: { type: 'STRING' },
+                amount: { type: 'INTEGER' },
+                notes: { type: 'STRING' },
+              },
+              required: ['date', 'amount'],
+            },
+          },
         },
-        required: ['type', 'name', 'totalAmount', 'startDate'],
+        required: ['type', 'name', 'totalAmount', 'startDate', 'payments'],
       },
     },
   },
@@ -103,7 +121,6 @@ export default async function handler(req: any, res: any) {
     const today = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Jakarta' });
     const promptText = buildDebtPrompt(today, Boolean(imageBase64));
 
-    // Siapkan parts untuk Gemini
     const parts: any[] = [];
     if (imageBase64) {
       const cleanBase64 = String(imageBase64).replace(/^data:[^;]+;base64,/, '');
@@ -119,7 +136,7 @@ export default async function handler(req: any, res: any) {
       parts.push({ text: `TEKS INPUT:\n${text.trim()}` });
     }
 
-    // ============ 1. Deteksi model aktif ============
+    // Deteksi model aktif
     let activeModels: string[] = [];
     try {
       const mRes = await fetch(
@@ -130,15 +147,11 @@ export default async function handler(req: any, res: any) {
         activeModels = (mData.models || [])
           .filter((m: any) => m.supportedGenerationMethods?.includes('generateContent'))
           .map((m: any) => String(m.name || '').replace(/^models\//, ''));
-        console.log('Model aktif:', activeModels.join(', '));
-      } else {
-        console.warn('Gagal list model:', mRes.status);
       }
     } catch (e) {
-      console.warn('List models error:', e);
+      console.warn('List models failed:', e);
     }
 
-    // Urutkan kandidat model: prioritas ke model flash aktif
     const preferredList = [
       process.env.GEMINI_MODEL?.trim(),
       'gemini-2.5-flash',
@@ -155,18 +168,14 @@ export default async function handler(req: any, res: any) {
       ])
     ).filter(m => m && !m.includes('1.5') && !m.includes('2.0'));
 
-    console.log('Kandidat model:', candidateModels.join(', '));
-
     let raw = '';
     let lastErrorMsg = '';
 
-    // ============ 2. Metode SDK GoogleGenAI ============
+    // SDK GoogleGenAI
     try {
       const ai = new GoogleGenAI({
         apiKey,
-        httpOptions: {
-          headers: { 'User-Agent': 'aistudio-build' },
-        },
+        httpOptions: { headers: { 'User-Agent': 'aistudio-build' } },
       });
 
       for (const modelToTry of candidateModels) {
@@ -202,7 +211,7 @@ export default async function handler(req: any, res: any) {
       console.error('SDK init error:', sdkInitErr);
     }
 
-    // ============ 3. Fallback REST API ============
+    // Fallback REST
     if (!raw) {
       for (const modelToTry of candidateModels) {
         const controller = new AbortController();
@@ -259,7 +268,6 @@ export default async function handler(req: any, res: any) {
       });
     }
 
-    // ============ 4. Parse JSON ============
     const parsed = extractJSON(raw);
     if (!parsed) {
       console.error('Raw response tidak bisa diparse:', raw.slice(0, 500));
@@ -279,25 +287,42 @@ export default async function handler(req: any, res: any) {
 
     const debts = rawDebts
       .slice(0, 50)
-      .map((d: any) => ({
-        type: d.type === 'piutang' ? 'piutang' : 'utang',
-        name: String(d.name || '').trim().slice(0, 100),
-        counterparty: String(d.counterparty || '').trim().slice(0, 100),
-        totalAmount: Math.abs(Math.round(Number(d.totalAmount) || 0)),
-        startDate: /^\d{4}-\d{2}-\d{2}$/.test(String(d.startDate || ''))
-          ? d.startDate
-          : today,
-        dueDate: d.dueDate && /^\d{4}-\d{2}-\d{2}$/.test(String(d.dueDate))
-          ? d.dueDate
-          : undefined,
-        installmentAmount: d.installmentAmount
-          ? Math.abs(Math.round(Number(d.installmentAmount)))
-          : undefined,
-        installmentPeriod: d.installmentPeriod
-          ? Math.round(Number(d.installmentPeriod))
-          : undefined,
-        notes: d.notes ? String(d.notes).trim().slice(0, 500) : undefined,
-      }))
+      .map((d: any) => {
+        const rawPayments = Array.isArray(d.payments) ? d.payments : [];
+        const payments = rawPayments
+          .slice(0, 200)
+          .map((p: any, idx: number) => ({
+            date: /^\d{4}-\d{2}-\d{2}$/.test(String(p.date || ''))
+              ? p.date
+              : today,
+            amount: Math.abs(Math.round(Number(p.amount) || 0)),
+            notes: p.notes
+              ? String(p.notes).trim().slice(0, 200)
+              : `Angsuran ke-${idx + 1}`,
+          }))
+          .filter((p: any) => p.amount > 0);
+
+        return {
+          type: d.type === 'piutang' ? 'piutang' : 'utang',
+          name: String(d.name || '').trim().slice(0, 100),
+          counterparty: String(d.counterparty || '').trim().slice(0, 100),
+          totalAmount: Math.abs(Math.round(Number(d.totalAmount) || 0)),
+          startDate: /^\d{4}-\d{2}-\d{2}$/.test(String(d.startDate || ''))
+            ? d.startDate
+            : today,
+          dueDate: d.dueDate && /^\d{4}-\d{2}-\d{2}$/.test(String(d.dueDate))
+            ? d.dueDate
+            : undefined,
+          installmentAmount: d.installmentAmount
+            ? Math.abs(Math.round(Number(d.installmentAmount)))
+            : undefined,
+          installmentPeriod: d.installmentPeriod
+            ? Math.round(Number(d.installmentPeriod))
+            : undefined,
+          notes: d.notes ? String(d.notes).trim().slice(0, 500) : undefined,
+          payments,
+        };
+      })
       .filter((d: any) => d.name && d.totalAmount > 0);
 
     return res.status(200).json({ success: true, debts });

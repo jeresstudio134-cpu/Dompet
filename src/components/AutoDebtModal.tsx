@@ -1,8 +1,13 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { Sparkles, X, Camera, Check, AlertCircle, Trash2, RefreshCw } from 'lucide-react';
 import confetti from 'canvas-confetti';
-import { Account } from '../types/finance.ts';
 import { formatRupiah } from '../utils/formatters.ts';
+
+interface ParsedPayment {
+  date: string;
+  amount: number;
+  notes?: string;
+}
 
 interface ParsedDebt {
   type: 'utang' | 'piutang';
@@ -14,13 +19,13 @@ interface ParsedDebt {
   installmentAmount?: number;
   installmentPeriod?: number;
   notes?: string;
+  payments?: ParsedPayment[];
 }
 
 interface AutoDebtModalProps {
   isOpen: boolean;
   onClose: () => void;
   onAddDebts: (items: Omit<ParsedDebt, 'id'>[]) => Promise<void>;
-  accounts?: Account[]; // opsional, untuk referensi akun
 }
 
 type Item = ParsedDebt & { key: string };
@@ -103,7 +108,6 @@ export const AutoDebtModal: React.FC<AutoDebtModalProps> = ({
 
   const allValid = items.length > 0 && items.every(isItemValid);
 
-  // Analisis teks dengan AI
   const handleAnalyze = async () => {
     if (!textInput.trim()) return;
     setIsLoading(true);
@@ -131,14 +135,12 @@ export const AutoDebtModal: React.FC<AutoDebtModalProps> = ({
     }
   };
 
-  // Scan foto struk dengan AI
   const processFile = async (file: File) => {
     setError(null);
     setNotice(null);
     setItems([]);
     setIsLoading(true);
     try {
-      // Kompres gambar (opsional, sederhana)
       const dataUrl = await new Promise<string>((resolve, reject) => {
         const reader = new FileReader();
         reader.onload = () => resolve(reader.result as string);
@@ -178,7 +180,6 @@ export const AutoDebtModal: React.FC<AutoDebtModalProps> = ({
     if (file) processFile(file);
   };
 
-  // Simpan semua baris
   const handleSave = async () => {
     if (!allValid) return;
     setIsSaving(true);
@@ -209,6 +210,9 @@ export const AutoDebtModal: React.FC<AutoDebtModalProps> = ({
         <div className="max-h-[42vh] overflow-y-auto space-y-2 pr-1">
           {items.map(it => {
             const valid = isItemValid(it);
+            const paymentCount = it.payments?.length || 0;
+            const paymentTotal = (it.payments || []).reduce((s, p) => s + p.amount, 0);
+
             return (
               <div
                 key={it.key}
@@ -272,7 +276,6 @@ export const AutoDebtModal: React.FC<AutoDebtModalProps> = ({
                     type="date"
                     value={it.dueDate || ''}
                     onChange={e => updateItem(it.key, { dueDate: e.target.value || undefined })}
-                    placeholder="Jatuh tempo"
                     className={inputCls}
                   />
                   <input
@@ -287,6 +290,37 @@ export const AutoDebtModal: React.FC<AutoDebtModalProps> = ({
                     placeholder="Cicilan / bulan"
                     className={`${inputCls} font-mono`}
                   />
+
+                  {paymentCount > 0 && (
+                    <div className="col-span-2 bg-emerald-950/30 border border-emerald-800/60 rounded-lg px-2.5 py-1.5 text-[11px] text-emerald-300 flex items-center justify-between">
+                      <span>
+                        💰 Terdeteksi <b>{paymentCount}</b> angsuran sudah dibayar
+                      </span>
+                      <span className="font-mono font-bold">
+                        {formatRupiah(paymentTotal)}
+                      </span>
+                    </div>
+                  )}
+
+                  {paymentCount > 0 && (
+                    <details className="col-span-2 bg-slate-900/60 border border-slate-700 rounded-lg">
+                      <summary className="cursor-pointer px-2.5 py-1.5 text-[11px] font-bold text-slate-300 hover:text-white">
+                        Lihat {paymentCount} angsuran
+                      </summary>
+                      <div className="px-2.5 py-2 space-y-1 max-h-40 overflow-y-auto">
+                        {it.payments!.map((p, i) => (
+                          <div key={i} className="flex items-center justify-between text-[10px] text-slate-400 gap-2">
+                            <span className="truncate">
+                              {p.date} • {p.notes || `Angsuran ${i + 1}`}
+                            </span>
+                            <span className="font-mono text-emerald-400 shrink-0">
+                              {formatRupiah(p.amount)}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    </details>
+                  )}
                 </div>
               </div>
             );
@@ -315,7 +349,6 @@ export const AutoDebtModal: React.FC<AutoDebtModalProps> = ({
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm animate-in fade-in">
       <div className="bg-slate-900 border border-slate-800 rounded-3xl w-full max-w-2xl overflow-hidden shadow-2xl flex flex-col max-h-[90vh]">
-        {/* Modal Header */}
         <div className="px-6 py-4 border-b border-slate-800 flex items-center justify-between bg-gradient-to-r from-slate-900 via-slate-900 to-emerald-950/40">
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 rounded-xl bg-emerald-500/20 text-emerald-400 flex items-center justify-center">
@@ -324,7 +357,7 @@ export const AutoDebtModal: React.FC<AutoDebtModalProps> = ({
             <div>
               <h2 className="text-base font-bold text-white">Pencatatan Utang/Piutang Otomatis</h2>
               <p className="text-xs text-slate-400">
-                AI membaca nama, nominal, dan jatuh tempo dari teks atau foto
+                AI membaca nama, nominal, jatuh tempo, dan riwayat angsuran dari teks atau foto
               </p>
             </div>
           </div>
@@ -336,7 +369,6 @@ export const AutoDebtModal: React.FC<AutoDebtModalProps> = ({
           </button>
         </div>
 
-        {/* Tab Navigation */}
         <div className="flex border-b border-slate-800 bg-slate-950/50 px-6 pt-2">
           <button
             onClick={() => switchTab('text')}
@@ -360,9 +392,7 @@ export const AutoDebtModal: React.FC<AutoDebtModalProps> = ({
           </button>
         </div>
 
-        {/* Modal Body */}
         <div className="p-6 overflow-y-auto space-y-4 flex-1">
-          {/* TAB: TEKS */}
           {activeTab === 'text' && (
             <div className="space-y-3">
               <label className="block text-xs font-semibold text-slate-300">
@@ -392,7 +422,6 @@ utang abah 30jt untuk tanah`}
             </div>
           )}
 
-          {/* TAB: FOTO STRUK */}
           {activeTab === 'receipt' && (
             <div className="border-2 border-dashed border-slate-700 hover:border-emerald-500/60 rounded-2xl p-6 text-center transition bg-slate-950/40">
               <input
@@ -427,7 +456,7 @@ utang abah 30jt untuk tanah`}
                     Upload atau Ambil Foto Nota / Struk
                   </div>
                   <p className="text-xs text-slate-400 max-w-sm mx-auto">
-                    AI akan membaca total, pihak, dan jatuh tempo dari gambar.
+                    AI akan membaca total, pihak, jatuh tempo, dan riwayat angsuran dari gambar.
                   </p>
                 </div>
               )}

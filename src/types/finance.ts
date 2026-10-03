@@ -68,30 +68,29 @@ export interface NeonConfig {
 // UTANG & PIUTANG
 // ============================================
 
-export type DebtType = 'utang' | 'piutang'; // utang = kita berutang, piutang = orang berutang ke kita
+export type DebtType = 'utang' | 'piutang';
 export type DebtStatus = 'aktif' | 'lunas';
 
 export interface DebtPayment {
   id: string;
   debtId: string;
-  date: string;          // YYYY-MM-DD
+  date: string;
   amount: number;
-  accountId?: string;    // akun yang dipakai bayar/terima (opsional)
+  accountId?: string;
   notes?: string;
 }
 
 export interface Debt {
   id: string;
   type: DebtType;
-  name: string;              // mis. "Motor Vario", "Pinjam Ali"
-  counterparty: string;      // mis. "Dealer Honda", "Ali"
-  totalAmount: number;       // total utang/piutang
-  startDate: string;         // YYYY-MM-DD
-  dueDate?: string;          // YYYY-MM-DD (opsional, jatuh tempo akhir)
-  installmentAmount?: number;// cicilan per bulan (opsional)
-  installmentPeriod?: number;// jumlah cicilan (opsional)
+  name: string;
+  counterparty: string;
+  totalAmount: number;
+  startDate: string;
+  dueDate?: string;
+  installmentAmount?: number;
+  installmentPeriod?: number;
   notes?: string;
   createdAt: string;
-  payments: DebtPayment[];   // riwayat pembayaran
-  // status dihitung otomatis dari totalAmount vs sum(payments)
+  payments: DebtPayment[];
 }

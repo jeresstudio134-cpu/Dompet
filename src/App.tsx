@@ -115,45 +115,52 @@ export default function App() {
   const [mainView, setMainView] = useState<'dompet' | 'utang'>('dompet');
 
   // Handler: Tambah utang/piutang
-  const handleAddDebt = async (debtData: Omit<Debt, 'id' | 'createdAt' | 'payments'>) => {
+   // Handler: Tambah utang/piutang (dengan support payments dari AI)
+  const handleAddDebt = async (
+    debtData: Omit<Debt, 'id' | 'createdAt' | 'payments'> & { payments?: any[] }
+  ) => {
+    const debtId = `debt-${Date.now()}`;
+    const incomingPayments = Array.isArray(debtData.payments) ? debtData.payments : [];
+
+    const payments: DebtPayment[] = incomingPayments.map((p: any, idx: number) => ({
+      id: `pay-${Date.now()}-${idx}-${Math.random().toString(36).slice(-4)}`,
+      debtId,
+      date: p.date,
+      amount: p.amount,
+      accountId: p.accountId,
+      notes: p.notes,
+    }));
+
     const newDebt: Debt = {
-      ...debtData,
-      id: `debt-${Date.now()}`,
+      type: debtData.type,
+      name: debtData.name,
+      counterparty: debtData.counterparty,
+      totalAmount: debtData.totalAmount,
+      startDate: debtData.startDate,
+      dueDate: debtData.dueDate,
+      installmentAmount: debtData.installmentAmount,
+      installmentPeriod: debtData.installmentPeriod,
+      notes: debtData.notes,
+      id: debtId,
       createdAt: new Date().toISOString(),
-      payments: [],
+      payments,
     };
+
     try {
       await apiSaveDebt(newDebt);
+      // Simpan juga setiap payment ke DB
+      for (const p of payments) {
+        await apiSaveDebtPayment(p);
+      }
       setDebts(prev => [newDebt, ...prev]);
-      showToast(`${debtData.type === 'utang' ? 'Utang' : 'Piutang'} "${debtData.name}" berhasil dicatat!`);
+      showToast(
+        `${debtData.type === 'utang' ? 'Utang' : 'Piutang'} "${debtData.name}" berhasil dicatat${
+          payments.length > 0 ? ` dengan ${payments.length} angsuran` : ''
+        }!`
+      );
     } catch (e) {
       console.error(e);
       showToast('Gagal menyimpan ke database. Coba lagi.', 'error');
-    }
-  };
-
-  // Handler: Update utang/piutang
-  const handleUpdateDebt = async (updated: Debt) => {
-    try {
-      await apiSaveDebt(updated);
-      setDebts(prev => prev.map(d => (d.id === updated.id ? updated : d)));
-      showToast(`Perubahan "${updated.name}" disimpan.`);
-    } catch (e) {
-      console.error(e);
-      showToast('Gagal memperbarui. Coba lagi.', 'error');
-    }
-  };
-
-  // Handler: Hapus utang/piutang
-  const handleDeleteDebt = async (id: string) => {
-    const target = debts.find(d => d.id === id);
-    try {
-      await apiDeleteDebt(id);
-      setDebts(prev => prev.filter(d => d.id !== id));
-      showToast(`${target?.type === 'utang' ? 'Utang' : 'Piutang'} "${target?.name}" dihapus.`, 'info');
-    } catch (e) {
-      console.error(e);
-      showToast('Gagal menghapus. Coba lagi.', 'error');
     }
   };
 
