@@ -1,4 +1,5 @@
 import { neon } from '@neondatabase/serverless';
+import { GoogleGenAI } from '@google/genai';
 import { createHmac, randomBytes, scryptSync, timingSafeEqual } from 'crypto';
 
 export const config = { maxDuration: 60 }; // Gemini bisa butuh >10 detik untuk foto
@@ -8,7 +9,7 @@ const PUBLIC_SETTINGS = ['store_name']; // hanya key ini yang boleh ditulis lewa
 const TOKEN_TTL_MS = 12 * 60 * 60 * 1000; // sesi admin 12 jam
 const MAX_FAILS = 5;
 const LOCK_MS = 5 * 60 * 1000;
-const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-3.8-flash';
+const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
 
 // ---------- Keamanan: token admin & PIN ----------
 
@@ -270,9 +271,12 @@ export default async function handler(req: any, res: any) {
       if (body.entity === 'ai_parse') {
         if (!isAdminReq) return denyAdmin();
 
-        const apiKey = process.env.GEMINI_API_KEY;
+        const apiKey = (process.env.GEMINI_API_KEY || '').trim();
         if (!apiKey) {
-          return res.status(500).json({ success: false, error: 'GEMINI_API_KEY belum diisi di Vercel.' });
+          return res.status(500).json({
+            success: false,
+            error: 'GEMINI_API_KEY belum diisi di Vercel. Pastikan sudah diisi dan sudah di-Redeploy.',
+          });
         }
 
         const text = String(body.text || '').slice(0, 8000);
@@ -320,41 +324,116 @@ export default async function handler(req: any, res: any) {
           },
         };
 
-        const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), 50000);
-        let gRes: any;
+        const candidateModels = Array.from(
+          new Set([process.env.GEMINI_MODEL?.trim() || 'gemini-2.5-flash', 'gemini-3.8-flash', 'gemini-1.5-flash'])
+        );
+
+        let raw = '';
+        let lastErrorMsg = '';
+
+        // Metode 1: Menggunakan Google GenAI SDK (Mendukung auth key AQ. dan AIza secara bawaan)
         try {
-          gRes = await fetch(
-            `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`,
-            {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
-              body: JSON.stringify({
-                contents: [{ role: 'user', parts }],
-                generationConfig: { temperature: 0.1, responseMimeType: 'application/json', responseSchema },
-              }),
-              signal: controller.signal,
+          const ai = new GoogleGenAI({
+            apiKey,
+            httpOptions: {
+              headers: {
+                'User-Agent': 'aistudio-build',
+              },
+            },
+          });
+
+          for (const modelToTry of candidateModels) {
+            try {
+              const aiParts: any[] = [];
+              if (imageBase64) {
+                aiParts.push({
+                  inlineData: {
+                    mimeType,
+                    data: imageBase64,
+                  },
+                });
+              }
+              const promptText =
+                buildAiPrompt(accRows, categoryNames, today, Boolean(imageBase64)) +
+                (text.trim() ? `\n\nTEKS INPUT:\n${text}` : '');
+              aiParts.push({ text: promptText });
+
+              const aiRes = await ai.models.generateContent({
+                model: modelToTry,
+                contents: { parts: aiParts },
+                config: {
+                  temperature: 0.1,
+                  responseMimeType: 'application/json',
+                },
+              });
+
+              if (aiRes && aiRes.text) {
+                raw = aiRes.text;
+                break;
+              }
+            } catch (sdkErr: any) {
+              console.error(`Gemini SDK error on model ${modelToTry}:`, sdkErr);
+              lastErrorMsg = sdkErr.message || String(sdkErr);
+              continue;
             }
-          );
-        } catch (e: any) {
-          clearTimeout(timer);
-          return res.status(504).json({ success: false, error: 'AI terlalu lama merespons. Coba lagi.' });
-        }
-        clearTimeout(timer);
-
-        if (!gRes.ok) {
-          console.error('Gemini error:', gRes.status, await gRes.text());
-          const msg =
-            gRes.status === 429
-              ? 'Kuota Gemini sedang habis. Coba lagi beberapa saat lagi.'
-              : gRes.status === 404
-              ? `Model Gemini "${GEMINI_MODEL}" tidak tersedia. Ganti nilai GEMINI_MODEL di Vercel dengan model terbaru.`
-              : `Gemini menolak permintaan (${gRes.status}). Periksa GEMINI_API_KEY dan GEMINI_MODEL di Vercel.`;
-          return res.status(502).json({ success: false, error: msg });
+          }
+        } catch (sdkInitErr) {
+          console.error('SDK init error:', sdkInitErr);
         }
 
-        const gJson: any = await gRes.json();
-        const raw = (gJson?.candidates?.[0]?.content?.parts || []).map((p: any) => p.text || '').join('');
+        // Metode 2: Fallback ke REST API (mengirimkan auth key via header dan query parameter)
+        if (!raw) {
+          for (const modelToTry of candidateModels) {
+            const controller = new AbortController();
+            const timer = setTimeout(() => controller.abort(), 45000);
+            try {
+              const headers: Record<string, string> = {
+                'Content-Type': 'application/json',
+                'x-goog-api-key': apiKey,
+              };
+              if (apiKey.startsWith('AQ.')) {
+                headers['Authorization'] = `Bearer ${apiKey}`;
+              }
+
+              const restUrl = `https://generativelanguage.googleapis.com/v1beta/models/${modelToTry}:generateContent?key=${encodeURIComponent(apiKey)}`;
+              const gRes = await fetch(restUrl, {
+                method: 'POST',
+                headers,
+                body: JSON.stringify({
+                  contents: [{ role: 'user', parts }],
+                  generationConfig: { temperature: 0.1, responseMimeType: 'application/json', responseSchema },
+                }),
+                signal: controller.signal,
+              });
+
+              clearTimeout(timer);
+
+              if (gRes.ok) {
+                const gJson: any = await gRes.json();
+                raw = (gJson?.candidates?.[0]?.content?.parts || []).map((p: any) => p.text || '').join('');
+                if (raw) break;
+              } else {
+                const errText = await gRes.text();
+                console.error(`Gemini REST error on model ${modelToTry}:`, gRes.status, errText);
+                lastErrorMsg = `Gemini (${gRes.status}): ${errText.slice(0, 160)}`;
+              }
+            } catch (fetchErr: any) {
+              clearTimeout(timer);
+              lastErrorMsg = 'Koneksi ke server AI timeout. Coba lagi.';
+              continue;
+            }
+          }
+        }
+
+        if (!raw) {
+          return res.status(502).json({
+            success: false,
+            error:
+              lastErrorMsg ||
+              'Gagal memproses struk dengan Gemini. Pastikan Anda sudah melakukan Redeploy di Vercel setelah memasukkan API Key.',
+          });
+        }
+
         let items: any;
         try {
           items = JSON.parse(raw);
