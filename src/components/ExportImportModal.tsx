@@ -43,13 +43,14 @@ export const ExportImportModal: React.FC<ExportImportModalProps> = ({
 
   const exportList = filteredTransactions !== undefined ? filteredTransactions : transactions;
   const isFiltered = filteredTransactions !== undefined && filteredTransactions.length !== transactions.length;
+  const [includeCatTransfers, setIncludeCatTransfers] = useState<boolean>(true);
 
   const HEADERS = ['No', 'Tanggal', 'Keterangan', 'Akun', 'Jenis', 'Kategori', 'Nominal', 'Catatan'];
 
   interface SummaryItem {
     label: string;
     value?: number;
-    type: 'masuk' | 'keluar' | 'sisa' | 'section' | 'acc-header' | 'acc-masuk' | 'acc-keluar';
+    type: 'masuk' | 'keluar' | 'sisa' | 'section' | 'acc-header' | 'acc-masuk' | 'acc-keluar' | 'info';
   }
 
   // Helper to build native Excel-compatible HTML (.xls) with Summary on the right
@@ -130,6 +131,11 @@ export const ExportImportModal: React.FC<ExportImportModalProps> = ({
               <td class="sum-acc-sub" style="padding-left:16px;">Keluar</td>
               <td class="num sum-acc-sub" style="color:#be123c;font-weight:bold;">${item.value ?? 0}</td>
             `;
+          } else if (item.type === 'info') {
+            rowHtml += `
+              <td class="sum-acc-sub" style="padding-left:16px;color:#0284c7;font-style:italic;">${item.label}</td>
+              <td class="num sum-acc-sub" style="color:#0284c7;font-weight:bold;">${item.value ?? 0}</td>
+            `;
           }
         } else {
           rowHtml += `
@@ -194,17 +200,92 @@ export const ExportImportModal: React.FC<ExportImportModalProps> = ({
 </html>`;
   };
 
+  const isCatTransfer = (t: Transaction) => t.id.startsWith('kt-');
+  const isAccTransfer = (t: Transaction) => t.category === 'Pindah Saldo';
+
   // 1. Export to Excel Native Spreadsheet (.xls) - Opens directly in distinct columns
   const handleExportExcel = () => {
-    const totalMasuk = exportList.filter(t => t.type === 'masuk').reduce((sum, t) => sum + t.amount, 0);
-    const totalKeluar = exportList.filter(t => t.type === 'keluar').reduce((sum, t) => sum + t.amount, 0);
-    const sisa = totalMasuk - totalKeluar;
+    const targetList = exportList.filter(t => includeCatTransfers || !isCatTransfer(t));
 
+    // 1. Pemasukan & Pengeluaran Riil (mutasi internal tidak menggandakan omset/biaya toko)
+    const realMasuk = targetList
+      .filter(t => t.type === 'masuk' && !isAccTransfer(t) && !isCatTransfer(t))
+      .reduce((sum, t) => sum + t.amount, 0);
+
+    const realKeluar = targetList
+      .filter(t => t.type === 'keluar' && !isAccTransfer(t) && !isCatTransfer(t))
+      .reduce((sum, t) => sum + t.amount, 0);
+
+    const sisa = realMasuk - realKeluar;
+
+    // Mutasi internal
+    const totalPindahKategori = targetList
+      .filter(t => isCatTransfer(t) && t.type === 'keluar')
+      .reduce((sum, t) => sum + t.amount, 0);
+
+    const totalPindahSaldo = targetList
+      .filter(t => isAccTransfer(t) && t.type === 'keluar')
+      .reduce((sum, t) => sum + t.amount, 0);
+
+    const summaryItems: SummaryItem[] = [
+      { label: 'Pemasukan Riil Toko', value: realMasuk, type: 'masuk' },
+      { label: 'Pengeluaran Riil Toko', value: realKeluar, type: 'keluar' },
+      { label: 'Sisa / Laba Bersih', value: sisa, type: 'sisa' },
+    ];
+
+    if (totalPindahKategori > 0 || totalPindahSaldo > 0) {
+      summaryItems.push({ label: 'MUTASI INTERNAL', type: 'section' });
+      if (totalPindahKategori > 0) {
+        summaryItems.push({ label: 'Pindah Kategori', value: totalPindahKategori, type: 'info' });
+      }
+      if (totalPindahSaldo > 0) {
+        summaryItems.push({ label: 'Pindah Saldo Antar Akun', value: totalPindahSaldo, type: 'info' });
+      }
+    }
+
+    // Rekap per Kantong (Kategori)
+    const catMap = new Map<string, { masuk: number; keluar: number; pindah: number }>();
+    targetList.forEach(t => {
+      if (isAccTransfer(t)) return;
+      const key = t.category && t.category.trim() && t.category !== '-' ? t.category : 'Tanpa Kategori';
+      const row = catMap.get(key) || { masuk: 0, keluar: 0, pindah: 0 };
+      if (isCatTransfer(t)) {
+        row.pindah += t.type === 'masuk' ? t.amount : -t.amount;
+      } else if (t.type === 'masuk') {
+        row.masuk += t.amount;
+      } else {
+        row.keluar += t.amount;
+      }
+      catMap.set(key, row);
+    });
+
+    const categoryBreakdown = Array.from(catMap.entries())
+      .map(([name, data]) => ({
+        name,
+        masuk: data.masuk,
+        keluar: data.keluar,
+        pindah: data.pindah,
+        saldo: data.masuk - data.keluar + data.pindah,
+      }))
+      .filter(c => c.masuk > 0 || c.keluar > 0 || c.pindah !== 0);
+
+    if (categoryBreakdown.length > 0) {
+      summaryItems.push({ label: 'REKAP PER KANTONG (KATEGORI)', type: 'section' });
+      categoryBreakdown.forEach(cat => {
+        summaryItems.push({ label: cat.name, type: 'acc-header' });
+        if (cat.masuk > 0) summaryItems.push({ label: '  Masuk', value: cat.masuk, type: 'acc-masuk' });
+        if (cat.keluar > 0) summaryItems.push({ label: '  Keluar', value: cat.keluar, type: 'acc-keluar' });
+        if (cat.pindah !== 0) summaryItems.push({ label: `  Mutasi Pindah (${cat.pindah > 0 ? '+' : ''})`, value: cat.pindah, type: 'info' });
+        summaryItems.push({ label: '  Saldo Kantong', value: cat.saldo, type: 'sisa' });
+      });
+    }
+
+    // Rekap per Akun
     const accountBreakdown = accounts
       .map(acc => {
-        const m = exportList.filter(t => t.accountId === acc.id && t.type === 'masuk').reduce((s, t) => s + t.amount, 0);
-        const k = exportList.filter(t => t.accountId === acc.id && t.type === 'keluar').reduce((s, t) => s + t.amount, 0);
-        const count = exportList.filter(t => t.accountId === acc.id).length;
+        const m = targetList.filter(t => t.accountId === acc.id && t.type === 'masuk' && !isCatTransfer(t)).reduce((s, t) => s + t.amount, 0);
+        const k = targetList.filter(t => t.accountId === acc.id && t.type === 'keluar' && !isCatTransfer(t)).reduce((s, t) => s + t.amount, 0);
+        const count = targetList.filter(t => t.accountId === acc.id).length;
         return {
           id: acc.id,
           name: acc.name,
@@ -216,32 +297,38 @@ export const ExportImportModal: React.FC<ExportImportModalProps> = ({
       })
       .filter(a => a.count > 0);
 
-    const summaryItems: SummaryItem[] = [
-      { label: 'Total Masuk', value: totalMasuk, type: 'masuk' },
-      { label: 'Total Keluar', value: totalKeluar, type: 'keluar' },
-      { label: 'Sisa', value: sisa, type: 'sisa' },
-    ];
-
     if (accountBreakdown.length > 0) {
       summaryItems.push({ label: 'TOTAL PER AKUN', type: 'section' });
       accountBreakdown.forEach(acc => {
         summaryItems.push({ label: acc.name, type: 'acc-header' });
-        summaryItems.push({ label: 'Masuk', value: acc.masuk, type: 'acc-masuk' });
-        summaryItems.push({ label: 'Keluar', value: acc.keluar, type: 'acc-keluar' });
+        summaryItems.push({ label: '  Masuk', value: acc.masuk, type: 'acc-masuk' });
+        summaryItems.push({ label: '  Keluar', value: acc.keluar, type: 'acc-keluar' });
+        summaryItems.push({ label: '  Selisih', value: acc.sisa, type: 'sisa' });
       });
     }
 
-    const rows = exportList.map((t, idx) => {
+    const rows = targetList.map((t, idx) => {
       const acc = accounts.find(a => a.id === t.accountId)?.name || t.accountId;
+      let jenisText = t.type === 'masuk' ? 'Masuk' : 'Keluar';
+      let catatanText = t.notes || '';
+
+      if (isCatTransfer(t)) {
+        jenisText = t.type === 'masuk' ? 'Pindah Kategori (Masuk)' : 'Pindah Kategori (Keluar)';
+        catatanText = catatanText ? `${catatanText} [Pindah Kategori]` : '[Pindah Kategori]';
+      } else if (isAccTransfer(t)) {
+        jenisText = t.type === 'masuk' ? 'Pindah Saldo (Masuk)' : 'Pindah Saldo (Keluar)';
+        catatanText = catatanText ? `${catatanText} [Pindah Saldo]` : '[Pindah Saldo]';
+      }
+
       return [
         t.no || idx + 1,
         t.date,
         t.description,
         acc,
-        t.type === 'masuk' ? 'Masuk' : 'Keluar',
+        jenisText,
         t.category || '-',
         t.amount,
-        t.notes || '',
+        catatanText,
       ];
     });
 
@@ -258,15 +345,79 @@ export const ExportImportModal: React.FC<ExportImportModalProps> = ({
 
   // 2. Export to CSV with Excel sep=, directive
   const handleExportCSV = () => {
-    const totalMasuk = exportList.filter(t => t.type === 'masuk').reduce((sum, t) => sum + t.amount, 0);
-    const totalKeluar = exportList.filter(t => t.type === 'keluar').reduce((sum, t) => sum + t.amount, 0);
-    const sisa = totalMasuk - totalKeluar;
+    const targetList = exportList.filter(t => includeCatTransfers || !isCatTransfer(t));
+
+    const realMasuk = targetList
+      .filter(t => t.type === 'masuk' && !isAccTransfer(t) && !isCatTransfer(t))
+      .reduce((sum, t) => sum + t.amount, 0);
+
+    const realKeluar = targetList
+      .filter(t => t.type === 'keluar' && !isAccTransfer(t) && !isCatTransfer(t))
+      .reduce((sum, t) => sum + t.amount, 0);
+
+    const sisa = realMasuk - realKeluar;
+
+    const totalPindahKategori = targetList
+      .filter(t => isCatTransfer(t) && t.type === 'keluar')
+      .reduce((sum, t) => sum + t.amount, 0);
+
+    const totalPindahSaldo = targetList
+      .filter(t => isAccTransfer(t) && t.type === 'keluar')
+      .reduce((sum, t) => sum + t.amount, 0);
+
+    const summaryItems: { label: string; value?: number }[] = [
+      { label: 'Pemasukan Riil Toko', value: realMasuk },
+      { label: 'Pengeluaran Riil Toko', value: realKeluar },
+      { label: 'Sisa / Laba Bersih', value: sisa },
+    ];
+
+    if (totalPindahKategori > 0 || totalPindahSaldo > 0) {
+      summaryItems.push({ label: '--- MUTASI INTERNAL ---' });
+      if (totalPindahKategori > 0) summaryItems.push({ label: '  Pindah Kategori', value: totalPindahKategori });
+      if (totalPindahSaldo > 0) summaryItems.push({ label: '  Pindah Saldo', value: totalPindahSaldo });
+    }
+
+    const catMap = new Map<string, { masuk: number; keluar: number; pindah: number }>();
+    targetList.forEach(t => {
+      if (isAccTransfer(t)) return;
+      const key = t.category && t.category.trim() && t.category !== '-' ? t.category : 'Tanpa Kategori';
+      const row = catMap.get(key) || { masuk: 0, keluar: 0, pindah: 0 };
+      if (isCatTransfer(t)) {
+        row.pindah += t.type === 'masuk' ? t.amount : -t.amount;
+      } else if (t.type === 'masuk') {
+        row.masuk += t.amount;
+      } else {
+        row.keluar += t.amount;
+      }
+      catMap.set(key, row);
+    });
+
+    const categoryBreakdown = Array.from(catMap.entries())
+      .map(([name, data]) => ({
+        name,
+        masuk: data.masuk,
+        keluar: data.keluar,
+        pindah: data.pindah,
+        saldo: data.masuk - data.keluar + data.pindah,
+      }))
+      .filter(c => c.masuk > 0 || c.keluar > 0 || c.pindah !== 0);
+
+    if (categoryBreakdown.length > 0) {
+      summaryItems.push({ label: '--- REKAP PER KANTONG (KATEGORI) ---' });
+      categoryBreakdown.forEach(cat => {
+        summaryItems.push({ label: cat.name });
+        if (cat.masuk > 0) summaryItems.push({ label: '  Masuk', value: cat.masuk });
+        if (cat.keluar > 0) summaryItems.push({ label: '  Keluar', value: cat.keluar });
+        if (cat.pindah !== 0) summaryItems.push({ label: '  Mutasi Pindah', value: cat.pindah });
+        summaryItems.push({ label: '  Saldo Kantong', value: cat.saldo });
+      });
+    }
 
     const accountBreakdown = accounts
       .map(acc => {
-        const m = exportList.filter(t => t.accountId === acc.id && t.type === 'masuk').reduce((s, t) => s + t.amount, 0);
-        const k = exportList.filter(t => t.accountId === acc.id && t.type === 'keluar').reduce((s, t) => s + t.amount, 0);
-        const count = exportList.filter(t => t.accountId === acc.id).length;
+        const m = targetList.filter(t => t.accountId === acc.id && t.type === 'masuk' && !isCatTransfer(t)).reduce((s, t) => s + t.amount, 0);
+        const k = targetList.filter(t => t.accountId === acc.id && t.type === 'keluar' && !isCatTransfer(t)).reduce((s, t) => s + t.amount, 0);
+        const count = targetList.filter(t => t.accountId === acc.id).length;
         return {
           id: acc.id,
           name: acc.name,
@@ -278,32 +429,38 @@ export const ExportImportModal: React.FC<ExportImportModalProps> = ({
       })
       .filter(a => a.count > 0);
 
-    const summaryItems: { label: string; value?: number }[] = [
-      { label: 'Total Masuk', value: totalMasuk },
-      { label: 'Total Keluar', value: totalKeluar },
-      { label: 'Sisa', value: sisa },
-    ];
-
     if (accountBreakdown.length > 0) {
       summaryItems.push({ label: '--- TOTAL PER AKUN ---' });
       accountBreakdown.forEach(acc => {
         summaryItems.push({ label: acc.name });
         summaryItems.push({ label: '  Masuk', value: acc.masuk });
         summaryItems.push({ label: '  Keluar', value: acc.keluar });
+        summaryItems.push({ label: '  Selisih', value: acc.sisa });
       });
     }
 
-    const rows = exportList.map((t, idx) => {
+    const rows = targetList.map((t, idx) => {
       const acc = accounts.find(a => a.id === t.accountId)?.name || t.accountId;
+      let jenisText = t.type === 'masuk' ? 'Masuk' : 'Keluar';
+      let catatanText = t.notes || '';
+
+      if (isCatTransfer(t)) {
+        jenisText = t.type === 'masuk' ? 'Pindah Kategori (Masuk)' : 'Pindah Kategori (Keluar)';
+        catatanText = catatanText ? `${catatanText} [Pindah Kategori]` : '[Pindah Kategori]';
+      } else if (isAccTransfer(t)) {
+        jenisText = t.type === 'masuk' ? 'Pindah Saldo (Masuk)' : 'Pindah Saldo (Keluar)';
+        catatanText = catatanText ? `${catatanText} [Pindah Saldo]` : '[Pindah Saldo]';
+      }
+
       return [
         t.no || idx + 1,
         t.date,
         `"${t.description.replace(/"/g, '""')}"`,
         `"${acc}"`,
-        t.type === 'masuk' ? 'Masuk' : 'Keluar',
+        `"${jenisText}"`,
         `"${t.category || '-'}"`,
         t.amount,
-        `"${(t.notes || '').replace(/"/g, '""')}"`,
+        `"${catatanText.replace(/"/g, '""')}"`,
       ];
     });
 
@@ -685,6 +842,32 @@ export const ExportImportModal: React.FC<ExportImportModalProps> = ({
                   </>
                 )}
               </p>
+
+              {/* Opsi penanganan transaksi Pindah Kategori */}
+              {exportList.some(t => t.id.startsWith('kt-')) && (
+                <div className="bg-slate-50 border border-slate-200 rounded-2xl p-3 space-y-1.5">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[11px] font-bold text-slate-700">Opsi Pindah Kategori</span>
+                    <span className="px-2 py-0.5 rounded-full text-[9px] font-bold bg-sky-100 text-sky-800">
+                      {exportList.filter(t => t.id.startsWith('kt-')).length} Baris Terdeteksi
+                    </span>
+                  </div>
+                  <label className="flex items-center gap-2 text-xs text-slate-700 cursor-pointer select-none">
+                    <input
+                      type="checkbox"
+                      checked={includeCatTransfers}
+                      onChange={(e) => setIncludeCatTransfers(e.target.checked)}
+                      className="w-4 h-4 text-[#1e3a5f] rounded focus:ring-[#1e3a5f] cursor-pointer"
+                    />
+                    <span>
+                      Sertakan baris <strong>Pindah Kategori</strong> (otomatis ditandai jelas di kolom Jenis & Catatan)
+                    </span>
+                  </label>
+                  <p className="text-[10px] text-slate-400 pl-6">
+                    *Total omset & pengeluaran riil toko tidak akan tergelembung oleh mutasi internal.
+                  </p>
+                </div>
+              )}
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 {/* 1. Excel Native .XLS */}

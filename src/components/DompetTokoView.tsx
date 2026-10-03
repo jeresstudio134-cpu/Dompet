@@ -1,22 +1,14 @@
 import React, { useState } from 'react';
 import { 
   Calendar, 
-  ArrowLeftRight, 
   Filter as FilterIcon, 
   RotateCcw, 
-  Check, 
   Sparkles, 
   Database, 
   Download, 
-  Plus, 
   Trash2, 
   Search, 
-  ChevronRight,
-  TrendingUp,
-  TrendingDown,
-  CheckCircle2,
   Lock,
-  Unlock,
   ShieldCheck,
   Edit2,
   X
@@ -25,6 +17,10 @@ import confetti from 'canvas-confetti';
 import { Transaction, Account, TransactionType, FilterState, MonthlyStats, NeonConfig } from '../types/finance.ts';
 import { formatRupiah, getCurrentDateIndo, formatTanggalIndo, parseRupiahInput } from '../utils/formatters.ts';
 
+// Pindah kategori disimpan sebagai dua baris berawalan "kt-":
+// keluar dari kategori asal dan masuk ke kategori tujuan, di akun yang sama (saldo akun tidak berubah)
+const isCatTransfer = (t: Transaction) => t.id.startsWith('kt-');
+
 interface DompetTokoViewProps {
   accounts: Account[];
   transactions: Transaction[];
@@ -32,6 +28,14 @@ interface DompetTokoViewProps {
   neonConfig: NeonConfig;
   onAddTransaction: (tx: Omit<Transaction, 'id'>) => Promise<boolean> | void;
   onTransfer: (fromAcc: string, toAcc: string, amount: number, date: string, notes: string) => Promise<boolean> | void;
+  onTransferCategory: (
+    fromCat: string,
+    toCat: string,
+    accountId: string,
+    amount: number,
+    date: string,
+    notes: string
+  ) => Promise<boolean>;
   onUndoLast: () => void;
   onDeleteTransaction: (id: string) => void;
   onEditTransaction: (tx: Transaction) => void;
@@ -57,6 +61,7 @@ export const DompetTokoView: React.FC<DompetTokoViewProps> = ({
   neonConfig,
   onAddTransaction,
   onTransfer,
+  onTransferCategory,
   onUndoLast,
   onDeleteTransaction,
   onEditTransaction,
@@ -90,6 +95,7 @@ export const DompetTokoView: React.FC<DompetTokoViewProps> = ({
   const [editCatatan, setEditCatatan] = useState('');
 
   const handleStartEdit = (tx: Transaction) => {
+    if (isCatTransfer(tx)) return;
     setEditingTx(tx);
     setEditDate(tx.date);
     setEditKeterangan(tx.description);
@@ -143,6 +149,14 @@ export const DompetTokoView: React.FC<DompetTokoViewProps> = ({
   const [transferKe, setTransferKe] = useState<string>('cash');
   const [transferNominalStr, setTransferNominalStr] = useState<string>('0');
   const [transferKeterangan, setTransferKeterangan] = useState<string>('');
+
+  // Form states for 'Pindah Kategori'
+  const [pindahMode, setPindahMode] = useState<'akun' | 'kategori'>('akun');
+  const [ktDari, setKtDari] = useState<string>('');
+  const [ktKe, setKtKe] = useState<string>('');
+  const [ktAkun, setKtAkun] = useState<string>('');
+  const [ktNominalStr, setKtNominalStr] = useState<string>('0');
+  const [ktKeterangan, setKtKeterangan] = useState<string>('');
 
   // Auto-sync account selections if accounts are added/edited/deleted
   React.useEffect(() => {
@@ -203,6 +217,11 @@ export const DompetTokoView: React.FC<DompetTokoViewProps> = ({
     }
     const num = parseInt(raw, 10);
     setTransferNominalStr(num.toLocaleString('id-ID'));
+  };
+
+  const handleKtNominalChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const raw = e.target.value.replace(/\D/g, '');
+    setKtNominalStr(raw ? parseInt(raw, 10).toLocaleString('id-ID') : '0');
   };
 
   // Submit 'Catat'
@@ -290,17 +309,41 @@ export const DompetTokoView: React.FC<DompetTokoViewProps> = ({
     return Array.from(set);
   }, [categories, transactions]);
 
+  // Saldo kantong sebuah kategori (semua transaksi, termasuk pindah kategori)
+  const pocketBalance = (cat: string) =>
+    transactions.reduce(
+      (sum, t) => (t.category === cat ? sum + (t.type === 'masuk' ? t.amount : -t.amount) : sum),
+      0
+    );
+
+  const ktAkunId = accounts.some(a => a.id === ktAkun) ? ktAkun : accounts[0]?.id || '';
+
+  // Submit 'Pindah Kategori'
+  const handlePindahKategori = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const amount = parseRupiahInput(ktNominalStr);
+    if (!ktDari || !ktKe || ktDari === ktKe || amount <= 0 || !ktAkunId) return;
+
+    const ok = await onTransferCategory(ktDari, ktKe, ktAkunId, amount, tanggal, ktKeterangan.trim());
+    if (!ok) return;
+
+    confetti({ particleCount: 35, spread: 60, origin: { y: 0.7 } });
+    setKtNominalStr('0');
+    setKtKeterangan('');
+  };
+
   // Filter pagination limit
   const [filterDisplayCount, setFilterDisplayCount] = useState<number>(30);
 
-  // Filtered transactions for Filter tab
-  const filteredList = transactions.filter(t => {
+  // Satu aturan filter dipakai bersama oleh daftar transaksi dan kedua rekap.
+  // skip: abaikan satu filter supaya rekapnya tetap menampilkan semua pilihan (akun atau kategori)
+  const matchesFilter = (t: Transaction, skip?: 'category' | 'account') => {
     if (filter.monthYear !== 'ALL' && !t.date.startsWith(filter.monthYear)) return false;
     if (filter.dateFrom && t.date < filter.dateFrom) return false;
     if (filter.dateTo && t.date > filter.dateTo) return false;
-    if (filter.accountId !== 'ALL' && t.accountId !== filter.accountId && t.transferTargetAccountId !== filter.accountId) return false;
+    if (skip !== 'account' && filter.accountId !== 'ALL' && t.accountId !== filter.accountId) return false;
     if (filter.type !== 'ALL' && t.type !== filter.type) return false;
-    if (filter.category !== 'ALL') {
+    if (skip !== 'category' && filter.category !== 'ALL') {
       if (filter.category === 'EMPTY') {
         if (t.category && t.category.trim() !== '' && t.category !== '-') return false;
       } else if (t.category !== filter.category) {
@@ -312,7 +355,141 @@ export const DompetTokoView: React.FC<DompetTokoViewProps> = ({
       if (!t.description.toLowerCase().includes(q) && !t.category?.toLowerCase().includes(q)) return false;
     }
     return true;
-  });
+  };
+
+  const filteredList = transactions.filter(t => matchesFilter(t));
+
+  // Kantong (kartu di halaman utama): saldo tiap kategori sepanjang waktu
+  const pockets = (() => {
+    const map = new Map<string, { masuk: number; keluar: number; pindah: number }>();
+    transactions.forEach(t => {
+      if (t.category === 'Pindah Saldo') return;
+      const key = t.category && t.category.trim() && t.category !== '-' ? t.category : 'EMPTY';
+      const row = map.get(key) || { masuk: 0, keluar: 0, pindah: 0 };
+      if (isCatTransfer(t)) row.pindah += t.type === 'masuk' ? t.amount : -t.amount;
+      else if (t.type === 'masuk') row.masuk += t.amount;
+      else row.keluar += t.amount;
+      map.set(key, row);
+    });
+    return Array.from(map.entries())
+      .map(([key, v]) => ({
+        key,
+        label: key === 'EMPTY' ? 'Tanpa Kategori' : key,
+        masuk: v.masuk,
+        keluar: v.keluar,
+        pindah: v.pindah,
+        saldo: v.masuk - v.keluar + v.pindah,
+      }))
+      .sort((a, b) => b.masuk + b.keluar + Math.abs(b.pindah) - (a.masuk + a.keluar + Math.abs(a.pindah)));
+  })();
+
+  const saldoAwalAkun = accounts.reduce((sum, a) => sum + (a.initialBalance || 0), 0);
+
+  // Rekap per kantong (kategori): ikut semua filter kecuali filter kategori
+  const categoryRecap = (() => {
+    const map = new Map<string, { masuk: number; keluar: number; pindah: number }>();
+    transactions.forEach(t => {
+      if (!matchesFilter(t, 'category')) return;
+      if (t.category === 'Pindah Saldo') return;
+      const key = t.category && t.category.trim() && t.category !== '-' ? t.category : 'EMPTY';
+      const row = map.get(key) || { masuk: 0, keluar: 0, pindah: 0 };
+      if (isCatTransfer(t)) row.pindah += t.type === 'masuk' ? t.amount : -t.amount;
+      else if (t.type === 'masuk') row.masuk += t.amount;
+      else row.keluar += t.amount;
+      map.set(key, row);
+    });
+    return Array.from(map.entries())
+      .map(([key, v]) => ({
+        key,
+        label: key === 'EMPTY' ? 'Tanpa Kategori' : key,
+        masuk: v.masuk,
+        keluar: v.keluar,
+        pindah: v.pindah,
+        selisih: v.masuk - v.keluar + v.pindah,
+      }))
+      .sort((a, b) => b.masuk + b.keluar + Math.abs(b.pindah) - (a.masuk + a.keluar + Math.abs(a.pindah)));
+  })();
+
+  // Rekap per akun: ikut semua filter kecuali filter akun
+  const accountRecap = accounts
+    .map(acc => {
+      let masuk = 0;
+      let keluar = 0;
+      let pindah = 0;
+      transactions.forEach(t => {
+        if (t.accountId !== acc.id || !matchesFilter(t, 'account')) return;
+        if (isCatTransfer(t) && filter.category === 'ALL') return;
+        if (t.category === 'Pindah Saldo') {
+          pindah += t.type === 'masuk' ? t.amount : -t.amount;
+        } else if (t.type === 'masuk') {
+          masuk += t.amount;
+        } else {
+          keluar += t.amount;
+        }
+      });
+      return { key: acc.id, label: acc.name, masuk, keluar, selisih: masuk - keluar, pindah };
+    })
+    .filter(r => r.masuk > 0 || r.keluar > 0 || r.pindah !== 0);
+
+  const renderRecap = (
+    title: string,
+    rows: { key: string; label: string; masuk: number; keluar: number; selisih: number; pindah: number }[],
+    selectedKey: string,
+    onSelect: (key: string) => void,
+    pindahLabel: string
+  ) => {
+    if (rows.length === 0 && selectedKey === 'ALL') return null;
+    return (
+      <div className="border border-slate-200 rounded-xl bg-white overflow-hidden">
+        <div className="px-2.5 py-1.5 bg-slate-50 border-b border-slate-200 flex items-center justify-between">
+          <span className="font-bold text-slate-700">{title}</span>
+          {selectedKey !== 'ALL' && (
+            <button
+              type="button"
+              onClick={() => onSelect('ALL')}
+              className="text-[11px] text-[#1e3a5f] hover:underline font-bold cursor-pointer"
+            >
+              Tampilkan semua
+            </button>
+          )}
+        </div>
+
+        {rows.length === 0 && <div className="px-2.5 py-2 text-slate-400">Tidak ada data.</div>}
+
+        <div className="divide-y divide-slate-100">
+          {rows.map(r => {
+            const selected = selectedKey === r.key;
+            return (
+              <button
+                key={r.key}
+                type="button"
+                onClick={() => onSelect(selected ? 'ALL' : r.key)}
+                className={`w-full text-left flex items-center gap-2 px-2.5 py-2 transition cursor-pointer ${
+                  selected ? 'bg-amber-50 border-l-4 border-amber-400' : 'hover:bg-slate-50'
+                }`}
+              >
+                <div className="min-w-0 flex-1">
+                  <div className="font-semibold text-slate-800 truncate">{r.label}</div>
+                  <div className="text-[11px] flex flex-wrap gap-x-2">
+                    {r.masuk > 0 && <span className="text-emerald-700">Masuk {formatRupiah(r.masuk)}</span>}
+                    {r.keluar > 0 && <span className="text-rose-700">Keluar {formatRupiah(r.keluar)}</span>}
+                    {r.pindah !== 0 && (
+                      <span className="text-sky-700">
+                        {pindahLabel} {r.pindah > 0 ? '+' : '-'}{formatRupiah(Math.abs(r.pindah))}
+                      </span>
+                    )}
+                  </div>
+                </div>
+                <span className={`font-mono font-bold shrink-0 ${r.selisih >= 0 ? 'text-emerald-700' : 'text-rose-700'}`}>
+                  {r.selisih < 0 ? '-' : ''}{formatRupiah(Math.abs(r.selisih))}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+    );
+  };
 
   // Check if any filter criteria is active
   const isFilterActive = Boolean(
@@ -347,7 +524,7 @@ export const DompetTokoView: React.FC<DompetTokoViewProps> = ({
       {/* Title & Header Toolbar */}
       <div className="flex items-center justify-between pt-1 pb-0.5">
         <div className="flex items-center gap-2">
-                    <h1 className="text-xl font-extrabold text-[#1e3a5f] tracking-tight">
+          <h1 className="text-xl font-extrabold text-[#1e3a5f] tracking-tight">
             {currentStoreName}
           </h1>
           
@@ -411,25 +588,73 @@ export const DompetTokoView: React.FC<DompetTokoViewProps> = ({
         </div>
       </div>
 
-      {/* 4 Accounts Grid (2x2) */}
-      <div className="grid grid-cols-2 gap-2.5">
-        {accounts.map(acc => {
-          const balance = stats.accountBalances[acc.id] ?? 0;
-          return (
-            <div 
-              key={acc.id}
-              className="bg-white rounded-xl border border-slate-200/90 p-3 shadow-xs"
-            >
-              <div className="text-[11px] font-medium text-slate-500 leading-tight">
-                {acc.name}
+      {/* Akun: di mana uangnya berada */}
+      <div className="space-y-1.5">
+        <div className="text-[11px] font-bold text-slate-500 uppercase tracking-wide px-0.5">
+          Akun
+        </div>
+        <div className="grid grid-cols-2 gap-2.5">
+          {accounts.map(acc => {
+            const balance = stats.accountBalances[acc.id] ?? 0;
+            return (
+              <div 
+                key={acc.id}
+                className="bg-white rounded-xl border border-slate-200/90 p-3 shadow-xs"
+              >
+                <div className="text-[11px] font-medium text-slate-500 leading-tight">
+                  {acc.name}
+                </div>
+                <div className="text-sm font-bold text-slate-800 tracking-tight mt-0.5">
+                  {formatRupiah(balance)}
+                </div>
               </div>
-              <div className="text-sm font-bold text-slate-800 tracking-tight mt-0.5">
-                {formatRupiah(balance)}
-              </div>
-            </div>
-          );
-        })}
+            );
+          })}
+        </div>
       </div>
+
+      {/* Kantong (kategori): jatah uang tiap kategori, klik untuk melihat detailnya di tab Filter */}
+      {pockets.length > 0 && (
+        <div className="space-y-1.5">
+          <div className="text-[11px] font-bold text-slate-500 uppercase tracking-wide px-0.5">
+            Kantong
+          </div>
+          <div className="grid grid-cols-2 gap-2.5">
+            {pockets.map(p => (
+              <button
+                key={p.key}
+                type="button"
+                onClick={() => {
+                  onFilterChange({ category: p.key });
+                  setActiveTab('filter');
+                }}
+                className="text-left bg-white rounded-xl border border-slate-200/90 p-3 shadow-xs hover:border-[#1e3a5f]/40 transition cursor-pointer"
+              >
+                <div className="text-[11px] font-medium text-slate-500 leading-tight">{p.label}</div>
+                <div className={`text-sm font-bold tracking-tight mt-0.5 ${p.saldo < 0 ? 'text-rose-700' : 'text-slate-800'}`}>
+                  {p.saldo < 0 ? '-' : ''}{formatRupiah(Math.abs(p.saldo))}
+                </div>
+                <div className="text-[10px] text-slate-400 mt-0.5 leading-snug break-words">
+                  +{formatRupiah(p.masuk)} · -{formatRupiah(p.keluar)}
+                  {p.pindah !== 0 && (
+                    <> · pindah {p.pindah > 0 ? '+' : '-'}{formatRupiah(Math.abs(p.pindah))}</>
+                  )}
+                </div>
+              </button>
+            ))}
+
+            {saldoAwalAkun > 0 && (
+              <div className="bg-slate-50 rounded-xl border border-dashed border-slate-300 p-3">
+                <div className="text-[11px] font-medium text-slate-500 leading-tight">Saldo awal akun</div>
+                <div className="text-sm font-bold tracking-tight mt-0.5 text-slate-600">
+                  {formatRupiah(saldoAwalAkun)}
+                </div>
+                <div className="text-[10px] text-slate-400 mt-0.5">belum masuk kantong</div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* 3 Summary KPIs (Masuk, Keluar, Sisa) */}
       <div className="grid grid-cols-3 gap-2">
@@ -765,130 +990,291 @@ export const DompetTokoView: React.FC<DompetTokoViewProps> = ({
           </form>
         )}
 
-        {/* TAB 2: PINDAH SALDO (TRANSFER) */}
+        {/* TAB 2: PINDAH (antar akun / antar kategori) */}
         {activeTab === 'pindah' && (
-          <form onSubmit={handlePindahSaldo} className="space-y-3.5">
-            
-            {/* Tanggal */}
-            <div className="w-full min-w-0">
-              <label className="block text-xs font-medium text-slate-700 mb-1">
-                Tanggal
-              </label>
-              <div className="relative w-full min-w-0">
-                <input
-                  type="date"
-                  value={tanggal}
-                  onChange={(e) => setTanggal(e.target.value)}
-                  className="block w-full max-w-full box-border bg-white text-slate-800 text-xs sm:text-sm rounded-lg pl-3 pr-10 py-2 border border-slate-300 focus:outline-none focus:ring-1 focus:ring-[#1e3a5f] transition cursor-pointer"
-                />
-                <Calendar className="w-4 h-4 text-slate-500 absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none" />
-              </div>
+          <div className="space-y-3.5">
+            <div className="grid grid-cols-2 gap-2">
+              <button
+                type="button"
+                onClick={() => setPindahMode('akun')}
+                className={`py-1.5 rounded-lg text-xs font-bold border transition cursor-pointer ${
+                  pindahMode === 'akun'
+                    ? 'bg-slate-800 text-white border-slate-800'
+                    : 'bg-white text-slate-600 border-slate-300 hover:bg-slate-50'
+                }`}
+              >
+                Antar Akun
+              </button>
+              <button
+                type="button"
+                onClick={() => setPindahMode('kategori')}
+                className={`py-1.5 rounded-lg text-xs font-bold border transition cursor-pointer ${
+                  pindahMode === 'kategori'
+                    ? 'bg-slate-800 text-white border-slate-800'
+                    : 'bg-white text-slate-600 border-slate-300 hover:bg-slate-50'
+                }`}
+              >
+                Antar Kategori
+              </button>
             </div>
 
-            {/* Dari Akun */}
-            <div>
-              <label className="block text-xs font-medium text-slate-700 mb-1">
-                Dari Akun (Sumber Dana)
-              </label>
-              <div className="grid grid-cols-2 gap-2">
-                {accounts.map(acc => {
-                  const isSelected = transferDari === acc.id;
-                  return (
-                    <button
-                      key={acc.id}
-                      type="button"
-                      onClick={() => setTransferDari(acc.id)}
-                      className={`py-2 rounded-lg text-xs font-bold border transition ${
-                        isSelected
-                          ? 'bg-[#1e3a5f] text-white border-[#1e3a5f]'
-                          : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-50'
-                      }`}
-                    >
-                      {acc.name}
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
+            {pindahMode === 'kategori' ? (
+              <form onSubmit={handlePindahKategori} className="space-y-3.5">
+                <p className="text-[11px] text-slate-500">
+                  Pindahkan jatah uang antar kategori, mis. diambil dari Toko untuk Pokok. Saldo akun tidak berubah.
+                </p>
 
-            {/* Ke Akun */}
-            <div>
-              <label className="block text-xs font-medium text-slate-700 mb-1">
-                Ke Akun (Tujuan Transfer)
-              </label>
-              <div className="grid grid-cols-2 gap-2">
-                {accounts.map(acc => {
-                  const isSelected = transferKe === acc.id;
-                  const isSame = transferDari === acc.id;
-                  return (
-                    <button
-                      key={acc.id}
-                      type="button"
-                      disabled={isSame}
-                      onClick={() => setTransferKe(acc.id)}
-                      className={`py-2 rounded-lg text-xs font-bold border transition ${
-                        isSelected
-                          ? 'bg-[#15803d] text-white border-[#15803d]'
-                          : isSame
-                          ? 'bg-slate-100 text-slate-400 border-slate-200 cursor-not-allowed'
-                          : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-50'
-                      }`}
-                    >
-                      {acc.name}
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
+                {/* Tanggal */}
+                <div className="w-full min-w-0">
+                  <label className="block text-xs font-medium text-slate-700 mb-1">
+                    Tanggal
+                  </label>
+                  <div className="relative w-full min-w-0">
+                    <input
+                      type="date"
+                      value={tanggal}
+                      onChange={(e) => setTanggal(e.target.value)}
+                      className="block w-full max-w-full box-border bg-white text-slate-800 text-xs sm:text-sm rounded-lg pl-3 pr-10 py-2 border border-slate-300 focus:outline-none focus:ring-1 focus:ring-[#1e3a5f] transition cursor-pointer"
+                    />
+                    <Calendar className="w-4 h-4 text-slate-500 absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+                  </div>
+                </div>
 
-            {/* Nominal (Rp) */}
-            <div>
-              <label className="block text-xs font-medium text-slate-700 mb-1">
-                Nominal Pindah (Rp)
-              </label>
-              <input
-                type="text"
-                required
-                value={transferNominalStr}
-                onChange={handleTransferNominalChange}
-                placeholder="0"
-                className="w-full bg-white text-slate-800 text-xs sm:text-sm rounded-lg px-3 py-2 border border-slate-300 focus:outline-none focus:ring-1 focus:ring-[#1e3a5f] font-mono transition"
-              />
-            </div>
+                {/* Diambil dari kategori */}
+                <div>
+                  <label className="block text-xs font-medium text-slate-700 mb-1">
+                    Diambil dari kategori
+                  </label>
+                  <select
+                    value={ktDari}
+                    onChange={(e) => setKtDari(e.target.value)}
+                    className="w-full bg-white text-slate-800 text-xs sm:text-sm rounded-lg px-3 py-2 border border-slate-300 focus:outline-none focus:ring-1 focus:ring-[#1e3a5f]"
+                  >
+                    <option value="">— pilih kategori —</option>
+                    {allCategories.filter(c => c !== 'Pindah Saldo').map(c => (
+                      <option key={c} value={c}>{c}</option>
+                    ))}
+                  </select>
+                  {ktDari && (
+                    <p className={`text-[11px] mt-1 ${pocketBalance(ktDari) < 0 ? 'text-rose-600' : 'text-slate-500'}`}>
+                      Saldo kantong {ktDari}: {pocketBalance(ktDari) < 0 ? '-' : ''}{formatRupiah(Math.abs(pocketBalance(ktDari)))}
+                    </p>
+                  )}
+                </div>
 
-            {/* Keterangan */}
-            <div>
-              <label className="block text-xs font-medium text-slate-700 mb-1">
-                Keterangan (opsional)
-              </label>
-              <input
-                type="text"
-                value={transferKeterangan}
-                onChange={(e) => setTransferKeterangan(e.target.value)}
-                placeholder="mis. Pindah dari TF / Pindah ke Cash"
-                className="w-full bg-white text-slate-800 text-xs sm:text-sm rounded-lg px-3 py-2 border border-slate-300 focus:outline-none focus:ring-1 focus:ring-[#1e3a5f] transition"
-              />
-            </div>
+                {/* Untuk kategori */}
+                <div>
+                  <label className="block text-xs font-medium text-slate-700 mb-1">
+                    Untuk kategori
+                  </label>
+                  <select
+                    value={ktKe}
+                    onChange={(e) => setKtKe(e.target.value)}
+                    className="w-full bg-white text-slate-800 text-xs sm:text-sm rounded-lg px-3 py-2 border border-slate-300 focus:outline-none focus:ring-1 focus:ring-[#1e3a5f]"
+                  >
+                    <option value="">— pilih kategori —</option>
+                    {allCategories.filter(c => c !== 'Pindah Saldo' && c !== ktDari).map(c => (
+                      <option key={c} value={c}>{c}</option>
+                    ))}
+                  </select>
+                  {ktKe && (
+                    <p className={`text-[11px] mt-1 ${pocketBalance(ktKe) < 0 ? 'text-rose-600' : 'text-slate-500'}`}>
+                      Saldo kantong {ktKe}: {pocketBalance(ktKe) < 0 ? '-' : ''}{formatRupiah(Math.abs(pocketBalance(ktKe)))}
+                    </p>
+                  )}
+                </div>
 
-            {/* Tombol PINDAH SALDO */}
-            <button
-              type="submit"
-              className="w-full py-2.5 rounded-lg bg-[#1e3a5f] hover:bg-[#162c47] text-white font-bold text-sm tracking-wide shadow-sm transition active:scale-[0.99] cursor-pointer"
-            >
-              PINDAH SALDO
-            </button>
+                {/* Dicatat di akun */}
+                <div>
+                  <label className="block text-xs font-medium text-slate-700 mb-1">
+                    Dicatat di akun
+                  </label>
+                  <select
+                    value={ktAkunId}
+                    onChange={(e) => setKtAkun(e.target.value)}
+                    className="w-full bg-white text-slate-800 text-xs sm:text-sm rounded-lg px-3 py-2 border border-slate-300 focus:outline-none focus:ring-1 focus:ring-[#1e3a5f]"
+                  >
+                    {accounts.map(a => (
+                      <option key={a.id} value={a.id}>{a.name}</option>
+                    ))}
+                  </select>
+                </div>
 
-            {/* Batalkan transaksi terakhir */}
-            <button
-              type="button"
-              onClick={onUndoLast}
-              disabled={transactions.length === 0}
-              className="w-full py-2 rounded-lg bg-white border border-slate-300 hover:bg-slate-50 text-slate-600 hover:text-slate-800 font-medium text-xs transition disabled:opacity-40 cursor-pointer"
-            >
-              Batalkan transaksi terakhir
-            </button>
+                {/* Nominal */}
+                <div>
+                  <label className="block text-xs font-medium text-slate-700 mb-1">
+                    Nominal (Rp)
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    value={ktNominalStr}
+                    onChange={handleKtNominalChange}
+                    placeholder="0"
+                    className="w-full bg-white text-slate-800 text-xs sm:text-sm rounded-lg px-3 py-2 border border-slate-300 focus:outline-none focus:ring-1 focus:ring-[#1e3a5f] font-mono transition"
+                  />
+                </div>
 
-          </form>
+                {/* Keterangan */}
+                <div>
+                  <label className="block text-xs font-medium text-slate-700 mb-1">
+                    Keterangan (opsional)
+                  </label>
+                  <input
+                    type="text"
+                    value={ktKeterangan}
+                    onChange={(e) => setKtKeterangan(e.target.value)}
+                    placeholder="mis. Jatah bulanan"
+                    className="w-full bg-white text-slate-800 text-xs sm:text-sm rounded-lg px-3 py-2 border border-slate-300 focus:outline-none focus:ring-1 focus:ring-[#1e3a5f] transition"
+                  />
+                </div>
+
+                <button
+                  type="submit"
+                  disabled={!ktDari || !ktKe || parseRupiahInput(ktNominalStr) <= 0}
+                  className="w-full py-2.5 rounded-lg bg-[#1e3a5f] hover:bg-[#162c47] disabled:opacity-40 text-white font-bold text-sm tracking-wide shadow-sm transition active:scale-[0.99] cursor-pointer"
+                >
+                  PINDAH KATEGORI
+                </button>
+
+                {isAdmin && (
+                  <button
+                    type="button"
+                    onClick={onUndoLast}
+                    disabled={transactions.length === 0}
+                    className="w-full py-2 rounded-lg bg-white border border-slate-300 hover:bg-slate-50 text-slate-600 hover:text-slate-800 font-medium text-xs transition disabled:opacity-40 cursor-pointer"
+                  >
+                    Batalkan transaksi terakhir
+                  </button>
+                )}
+              </form>
+            ) : (
+              <form onSubmit={handlePindahSaldo} className="space-y-3.5">
+                
+                {/* Tanggal */}
+                <div className="w-full min-w-0">
+                  <label className="block text-xs font-medium text-slate-700 mb-1">
+                    Tanggal
+                  </label>
+                  <div className="relative w-full min-w-0">
+                    <input
+                      type="date"
+                      value={tanggal}
+                      onChange={(e) => setTanggal(e.target.value)}
+                      className="block w-full max-w-full box-border bg-white text-slate-800 text-xs sm:text-sm rounded-lg pl-3 pr-10 py-2 border border-slate-300 focus:outline-none focus:ring-1 focus:ring-[#1e3a5f] transition cursor-pointer"
+                    />
+                    <Calendar className="w-4 h-4 text-slate-500 absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+                  </div>
+                </div>
+
+                {/* Dari Akun */}
+                <div>
+                  <label className="block text-xs font-medium text-slate-700 mb-1">
+                    Dari Akun (Sumber Dana)
+                  </label>
+                  <div className="grid grid-cols-2 gap-2">
+                    {accounts.map(acc => {
+                      const isSelected = transferDari === acc.id;
+                      return (
+                        <button
+                          key={acc.id}
+                          type="button"
+                          onClick={() => setTransferDari(acc.id)}
+                          className={`py-2 rounded-lg text-xs font-bold border transition ${
+                            isSelected
+                              ? 'bg-[#1e3a5f] text-white border-[#1e3a5f]'
+                              : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-50'
+                          }`}
+                        >
+                          {acc.name}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {/* Ke Akun */}
+                <div>
+                  <label className="block text-xs font-medium text-slate-700 mb-1">
+                    Ke Akun (Tujuan Transfer)
+                  </label>
+                  <div className="grid grid-cols-2 gap-2">
+                    {accounts.map(acc => {
+                      const isSelected = transferKe === acc.id;
+                      const isSame = transferDari === acc.id;
+                      return (
+                        <button
+                          key={acc.id}
+                          type="button"
+                          disabled={isSame}
+                          onClick={() => setTransferKe(acc.id)}
+                          className={`py-2 rounded-lg text-xs font-bold border transition ${
+                            isSelected
+                              ? 'bg-[#15803d] text-white border-[#15803d]'
+                              : isSame
+                              ? 'bg-slate-100 text-slate-400 border-slate-200 cursor-not-allowed'
+                              : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-50'
+                          }`}
+                        >
+                          {acc.name}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {/* Nominal (Rp) */}
+                <div>
+                  <label className="block text-xs font-medium text-slate-700 mb-1">
+                    Nominal Pindah (Rp)
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    value={transferNominalStr}
+                    onChange={handleTransferNominalChange}
+                    placeholder="0"
+                    className="w-full bg-white text-slate-800 text-xs sm:text-sm rounded-lg px-3 py-2 border border-slate-300 focus:outline-none focus:ring-1 focus:ring-[#1e3a5f] font-mono transition"
+                  />
+                </div>
+
+                {/* Keterangan */}
+                <div>
+                  <label className="block text-xs font-medium text-slate-700 mb-1">
+                    Keterangan (opsional)
+                  </label>
+                  <input
+                    type="text"
+                    value={transferKeterangan}
+                    onChange={(e) => setTransferKeterangan(e.target.value)}
+                    placeholder="mis. Pindah dari TF / Pindah ke Cash"
+                    className="w-full bg-white text-slate-800 text-xs sm:text-sm rounded-lg px-3 py-2 border border-slate-300 focus:outline-none focus:ring-1 focus:ring-[#1e3a5f] transition"
+                  />
+                </div>
+
+                {/* Tombol PINDAH SALDO */}
+                <button
+                  type="submit"
+                  className="w-full py-2.5 rounded-lg bg-[#1e3a5f] hover:bg-[#162c47] text-white font-bold text-sm tracking-wide shadow-sm transition active:scale-[0.99] cursor-pointer"
+                >
+                  PINDAH SALDO
+                </button>
+
+                {/* Batalkan transaksi terakhir - Hanya di Mode Admin */}
+                {isAdmin && (
+                  <button
+                    type="button"
+                    onClick={onUndoLast}
+                    disabled={transactions.length === 0}
+                    className="w-full py-2 rounded-lg bg-white border border-slate-300 hover:bg-slate-50 text-slate-600 hover:text-slate-800 font-medium text-xs transition disabled:opacity-40 cursor-pointer"
+                  >
+                    Batalkan transaksi terakhir
+                  </button>
+                )}
+
+              </form>
+            )}
+          </div>
         )}
 
         {/* TAB 3: FILTER & PELACAKAN BULANAN */}
@@ -1068,8 +1454,15 @@ export const DompetTokoView: React.FC<DompetTokoViewProps> = ({
 
             {/* Period Summary Result */}
             {(() => {
-              const totalMasuk = filteredList.filter(t => t.type === 'masuk').reduce((sum, t) => sum + t.amount, 0);
-              const totalKeluar = filteredList.filter(t => t.type === 'keluar').reduce((sum, t) => sum + t.amount, 0);
+              // Pindah saldo tidak dihitung. Pindah kategori hanya dihitung saat satu kategori dipilih
+              // (karena itu pemasukan/pengeluaran kantong tersebut).
+              const counted = filteredList.filter(t => {
+                if (t.category === 'Pindah Saldo') return filter.category === 'Pindah Saldo';
+                if (isCatTransfer(t)) return filter.category !== 'ALL';
+                return true;
+              });
+              const totalMasuk = counted.filter(t => t.type === 'masuk').reduce((sum, t) => sum + t.amount, 0);
+              const totalKeluar = counted.filter(t => t.type === 'keluar').reduce((sum, t) => sum + t.amount, 0);
               const sisa = totalMasuk - totalKeluar;
 
               return (
@@ -1081,9 +1474,9 @@ export const DompetTokoView: React.FC<DompetTokoViewProps> = ({
                   
                   {filter.category !== 'ALL' && (
                     <div className="flex items-center justify-between text-amber-900 font-bold bg-amber-50 px-2 py-1 rounded-md border border-amber-200">
-                      <span>Total Kategori "{filter.category === 'EMPTY' ? 'Tanpa Kategori' : filter.category}":</span>
+                      <span>Saldo Kantong "{filter.category === 'EMPTY' ? 'Tanpa Kategori' : filter.category}":</span>
                       <span>
-                        {formatRupiah(filteredList.reduce((sum, t) => sum + t.amount, 0))}
+                        {sisa < 0 ? '-' : ''}{formatRupiah(Math.abs(sisa))}
                       </span>
                     </div>
                   )}
@@ -1109,6 +1502,10 @@ export const DompetTokoView: React.FC<DompetTokoViewProps> = ({
                 </div>
               );
             })()}
+
+            {/* Rekap per Kantong & per Akun (klik baris untuk memfilter) */}
+            {renderRecap('Rekap per Kantong (kategori)', categoryRecap, filter.category, key => onFilterChange({ category: key }), 'Pindah kategori')}
+            {renderRecap('Rekap per Akun', accountRecap, filter.accountId, key => onFilterChange({ accountId: key }), 'Pindah saldo')}
 
             {/* Filtered list preview (Full, no text truncation) */}
             <div className="max-h-[500px] overflow-y-auto divide-y divide-slate-100 border border-slate-200 rounded-xl bg-white">
@@ -1139,18 +1536,25 @@ export const DompetTokoView: React.FC<DompetTokoViewProps> = ({
                         <span className="bg-slate-100 text-slate-700 px-1.5 py-0.5 rounded text-[10px] font-medium border border-slate-200">
                           {t.category || 'Tanpa Kategori'}
                         </span>
+                        {isCatTransfer(t) && (
+                          <span className="bg-sky-50 text-sky-700 px-1.5 py-0.5 rounded text-[10px] font-medium border border-sky-200">
+                            Pindah kategori
+                          </span>
+                        )}
                       </div>
                     </div>
                     {isAdmin && (
                       <div className="flex items-center gap-1 shrink-0 pt-0.5">
-                        <button
-                          type="button"
-                          onClick={() => handleStartEdit(t)}
-                          className="p-1 text-slate-400 hover:text-[#1e3a5f] hover:bg-slate-100 rounded-md transition cursor-pointer"
-                          title="Edit Transaksi (Admin)"
-                        >
-                          <Edit2 className="w-3.5 h-3.5" />
-                        </button>
+                        {!isCatTransfer(t) && (
+                          <button
+                            type="button"
+                            onClick={() => handleStartEdit(t)}
+                            className="p-1 text-slate-400 hover:text-[#1e3a5f] hover:bg-slate-100 rounded-md transition cursor-pointer"
+                            title="Edit Transaksi (Admin)"
+                          >
+                            <Edit2 className="w-3.5 h-3.5" />
+                          </button>
+                        )}
                         <button
                           type="button"
                           onClick={() => onDeleteTransaction(t.id)}
@@ -1248,20 +1652,27 @@ export const DompetTokoView: React.FC<DompetTokoViewProps> = ({
                         </span>
                       </>
                     )}
+                    {isCatTransfer(tx) && (
+                      <span className="bg-sky-50 text-sky-700 px-1.5 py-0.5 rounded text-[10px] font-medium border border-sky-200">
+                        Pindah kategori
+                      </span>
+                    )}
                   </div>
                 </div>
 
                 {/* Edit & Delete Buttons - Hanya Muncul di Mode Admin */}
                 {isAdmin && (
                   <div className="flex items-center gap-1 shrink-0 pt-0.5">
-                    <button
-                      type="button"
-                      onClick={() => handleStartEdit(tx)}
-                      title="Edit transaksi ini (Admin)"
-                      className="p-1 text-slate-400 hover:text-[#1e3a5f] hover:bg-slate-100 rounded-md transition cursor-pointer"
-                    >
-                      <Edit2 className="w-3.5 h-3.5" />
-                    </button>
+                    {!isCatTransfer(tx) && (
+                      <button
+                        type="button"
+                        onClick={() => handleStartEdit(tx)}
+                        title="Edit transaksi ini (Admin)"
+                        className="p-1 text-slate-400 hover:text-[#1e3a5f] hover:bg-slate-100 rounded-md transition cursor-pointer"
+                      >
+                        <Edit2 className="w-3.5 h-3.5" />
+                      </button>
+                    )}
                     <button
                       type="button"
                       onClick={() => onDeleteTransaction(tx.id)}

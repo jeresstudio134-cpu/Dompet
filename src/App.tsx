@@ -293,6 +293,8 @@ export default function App() {
     const dailyExpenses: Record<string, number> = {};
 
     transactions.forEach(t => {
+      // Pindah saldo & pindah kategori hanya memindahkan uang, bukan pemasukan/pengeluaran sungguhan
+      if (t.category === 'Pindah Saldo' || t.id.startsWith('kt-')) return;
       if (t.type === 'masuk') {
         totalMasuk += t.amount;
       } else {
@@ -341,7 +343,7 @@ export default function App() {
       if (filter.monthYear !== 'ALL' && !t.date.startsWith(filter.monthYear)) return false;
       if (filter.dateFrom && t.date < filter.dateFrom) return false;
       if (filter.dateTo && t.date > filter.dateTo) return false;
-      if (filter.accountId !== 'ALL' && t.accountId !== filter.accountId && t.transferTargetAccountId !== filter.accountId) return false;
+      if (filter.accountId !== 'ALL' && t.accountId !== filter.accountId) return false;
       if (filter.type !== 'ALL' && t.type !== filter.type) return false;
       if (filter.category !== 'ALL') {
         if (filter.category === 'EMPTY') {
@@ -466,12 +468,68 @@ export default function App() {
     }
   };
 
+  // Handler: Pindah Kategori (mis. diambil dari Toko untuk Pokok). Saldo akun tidak berubah.
+  const handleTransferCategory = async (
+    fromCat: string,
+    toCat: string,
+    accountId: string,
+    amount: number,
+    date: string,
+    notes: string
+  ): Promise<boolean> => {
+    const baseNo = getNextNo();
+    const stamp = Date.now();
+    const outId = `kt-${stamp}-out`;
+    const inId = `kt-${stamp}-in`;
+
+    const txKeluar: Transaction = {
+      id: outId,
+      no: baseNo,
+      date,
+      description: notes ? `${notes} (untuk ${toCat})` : `Diambil untuk ${toCat}`,
+      accountId,
+      type: 'keluar',
+      category: fromCat,
+      amount,
+      linkedTransactionId: inId,
+      createdAt: new Date().toISOString(),
+    };
+
+    const txMasuk: Transaction = {
+      id: inId,
+      no: baseNo + 1,
+      date,
+      description: notes ? `${notes} (dari ${fromCat})` : `Ambil dari ${fromCat}`,
+      accountId,
+      type: 'masuk',
+      category: toCat,
+      amount,
+      linkedTransactionId: outId,
+      createdAt: new Date().toISOString(),
+    };
+
+    try {
+      await apiSaveTransactions([txMasuk, txKeluar]);
+      setTransactions(prev => [txMasuk, txKeluar, ...prev]);
+      showToast(`Pindah kategori ${formatRupiah(amount)} dari ${fromCat} ke ${toCat} berhasil!`);
+      return true;
+    } catch (e) {
+      console.error(e);
+      showToast('Gagal memindahkan kategori. Periksa koneksi lalu coba lagi.', 'error');
+      return false;
+    }
+  };
+
   // Handler: Batalkan transaksi terakhir (Undo last)
   const handleUndoLast = async () => {
     if (transactions.length === 0) return;
     const lastTx = transactions[0];
 
     const idsToRemove = [lastTx.id];
+    // Pindah kategori terdiri dari dua baris yang saling terhubung
+    if (lastTx.id.startsWith('kt-') && lastTx.linkedTransactionId) {
+      idsToRemove.push(lastTx.linkedTransactionId);
+    }
     if (lastTx.description.startsWith('Pindah') && transactions.length > 1) {
       const secondTx = transactions[1];
       if (secondTx.description.startsWith('Pindah') && secondTx.amount === lastTx.amount && secondTx.date === lastTx.date) {
@@ -493,9 +551,11 @@ export default function App() {
   const handleDeleteTransaction = async (id: string) => {
     const target = transactions.find(t => t.id === id);
     if (!confirm(`Hapus transaksi "${target?.description || ''}"?`)) return;
+    const ids = [id];
+    if (id.startsWith('kt-') && target?.linkedTransactionId) ids.push(target.linkedTransactionId);
     try {
-      await apiDeleteTransaction(id);
-      setTransactions(prev => prev.filter(t => t.id !== id));
+      await Promise.all(ids.map(x => apiDeleteTransaction(x)));
+      setTransactions(prev => prev.filter(t => !ids.includes(t.id)));
       showToast('Transaksi telah dihapus.', 'info');
     } catch (e) {
       console.error(e);
@@ -561,6 +621,7 @@ export default function App() {
           neonConfig={neonConfig}
           onAddTransaction={handleSaveTransaction}
           onTransfer={handleTransfer}
+          onTransferCategory={handleTransferCategory}
           onUndoLast={handleUndoLast}
           onDeleteTransaction={handleDeleteTransaction}
           onEditTransaction={handleEditTransaction}
