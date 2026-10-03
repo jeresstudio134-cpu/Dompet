@@ -13,7 +13,9 @@ import {
   Account, 
   FilterState, 
   MonthlyStats, 
-  NeonConfig 
+  NeonConfig,
+  Debt,
+  DebtPayment,
 } from './types/finance.ts';
 import { 
   getMonthYearOptions, 
@@ -31,12 +33,12 @@ import {
   apiDeleteCategory,
   apiSaveSetting,
   getAdminToken,
+  clearAdminToken,
   apiLoadDebts,
   apiSaveDebt,
   apiDeleteDebt,
   apiSaveDebtPayment,
   apiDeleteDebtPayment,
-  clearAdminToken
 } from './lib/api.ts';
 
 // Components
@@ -45,13 +47,12 @@ import { AutoRecordModal } from './components/AutoRecordModal.tsx';
 import { NeonVercelModal } from './components/NeonVercelModal.tsx';
 import { ExportImportModal } from './components/ExportImportModal.tsx';
 import { AdminPinModal } from './components/AdminPinModal.tsx';
-import { Debt, DebtPayment } from './types/finance.ts';
 import { UtangPiutangView } from './components/UtangPiutangView.tsx';
 import { Wallet, CreditCard } from 'lucide-react';
 
 
 export default function App() {
-  // 1. Core State: semua data bersumber dari database (lewat /api/transactions)
+  // 1. Core State
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [storeName, setStoreName] = useState<string>('Dompet Toko');
@@ -73,7 +74,7 @@ export default function App() {
     }
   };
 
-  // Kategori (disimpan di database, tanpa 'Lainnya' / 'lainya')
+  // Kategori
   const isExcludedCategory = (name?: string) => {
     if (!name) return true;
     const lower = name.trim().toLowerCase();
@@ -100,7 +101,6 @@ export default function App() {
     try {
       await apiDeleteCategory(catToDelete);
       setCategories(prev => prev.filter(c => c !== catToDelete));
-      // Kosongkan kategori ini dari transaksi lama (di database sudah dilakukan server)
       setTransactions(prev => prev.map(t => (t.category === catToDelete ? { ...t, category: '' } : t)));
       showToast(`Kategori "${catToDelete}" telah dihapus.`, 'info');
     } catch (e) {
@@ -109,13 +109,13 @@ export default function App() {
     }
   };
 
+  // ============================================
+  // UTANG & PIUTANG
+  // ============================================
   const [debts, setDebts] = useState<Debt[]>([]);
-
-  // Navigasi view: 'dompet' = Dompet Toko, 'utang' = Utang & Piutang
   const [mainView, setMainView] = useState<'dompet' | 'utang'>('dompet');
 
-  // Handler: Tambah utang/piutang
-   // Handler: Tambah utang/piutang (dengan support payments dari AI)
+  // Handler: Tambah utang/piutang (dengan support payments dari AI)
   const handleAddDebt = async (
     debtData: Omit<Debt, 'id' | 'createdAt' | 'payments'> & { payments?: any[] }
   ) => {
@@ -148,7 +148,6 @@ export default function App() {
 
     try {
       await apiSaveDebt(newDebt);
-      // Simpan juga setiap payment ke DB
       for (const p of payments) {
         await apiSaveDebtPayment(p);
       }
@@ -164,8 +163,39 @@ export default function App() {
     }
   };
 
+  // Handler: Update utang/piutang
+  const handleUpdateDebt = async (updated: Debt) => {
+    try {
+      await apiSaveDebt(updated);
+      setDebts(prev => prev.map(d => (d.id === updated.id ? updated : d)));
+      showToast(`Perubahan "${updated.name}" disimpan.`);
+    } catch (e) {
+      console.error(e);
+      showToast('Gagal memperbarui. Coba lagi.', 'error');
+    }
+  };
+
+  // Handler: Hapus utang/piutang
+  const handleDeleteDebt = async (id: string) => {
+    const target = debts.find(d => d.id === id);
+    try {
+      await apiDeleteDebt(id);
+      setDebts(prev => prev.filter(d => d.id !== id));
+      showToast(
+        `${target?.type === 'utang' ? 'Utang' : 'Piutang'} "${target?.name}" dihapus.`,
+        'info'
+      );
+    } catch (e) {
+      console.error(e);
+      showToast('Gagal menghapus. Coba lagi.', 'error');
+    }
+  };
+
   // Handler: Tambah pembayaran/angsuran
-  const handleAddDebtPayment = async (debtId: string, payment: Omit<DebtPayment, 'id' | 'debtId'>) => {
+  const handleAddDebtPayment = async (
+    debtId: string,
+    payment: Omit<DebtPayment, 'id' | 'debtId'>
+  ) => {
     const newPayment: DebtPayment = {
       ...payment,
       id: `pay-${Date.now()}-${Math.random().toString(36).slice(-4)}`,
@@ -173,9 +203,11 @@ export default function App() {
     };
     try {
       await apiSaveDebtPayment(newPayment);
-      setDebts(prev => prev.map(d =>
-        d.id === debtId ? { ...d, payments: [...d.payments, newPayment] } : d
-      ));
+      setDebts(prev =>
+        prev.map(d =>
+          d.id === debtId ? { ...d, payments: [...d.payments, newPayment] } : d
+        )
+      );
       showToast(`Pembayaran ${formatRupiah(payment.amount)} berhasil dicatat!`);
     } catch (e) {
       console.error(e);
@@ -187,17 +219,18 @@ export default function App() {
   const handleDeleteDebtPayment = async (debtId: string, paymentId: string) => {
     try {
       await apiDeleteDebtPayment(paymentId);
-      setDebts(prev => prev.map(d => {
-        if (d.id !== debtId) return d;
-        return { ...d, payments: d.payments.filter(p => p.id !== paymentId) };
-      }));
+      setDebts(prev =>
+        prev.map(d => {
+          if (d.id !== debtId) return d;
+          return { ...d, payments: d.payments.filter(p => p.id !== paymentId) };
+        })
+      );
       showToast('Pembayaran dihapus.', 'info');
     } catch (e) {
       console.error(e);
       showToast('Gagal menghapus pembayaran. Coba lagi.', 'error');
     }
   };
-
 
   // 2. Neon Postgres Configuration
   const [neonConfig, setNeonConfig] = useState<NeonConfig>(() => getSavedNeonConfig());
@@ -283,7 +316,7 @@ export default function App() {
   const [isNeonModalOpen, setIsNeonModalOpen] = useState(false);
   const [isExportImportOpen, setIsExportImportOpen] = useState(false);
 
-  // 5. Admin Authentication State (token sesi dari server)
+  // 5. Admin Authentication State
   const [isAdmin, setIsAdmin] = useState<boolean>(() => Boolean(getAdminToken()));
   const [isAdminModalOpen, setIsAdminModalOpen] = useState(false);
 
@@ -298,7 +331,6 @@ export default function App() {
     showToast('Mode Kasir aktif. Pengeditan dan penghapusan data dikunci.', 'info');
   };
 
-  // Server menolak token (kedaluwarsa / tidak valid): kembali ke mode Kasir
   useEffect(() => {
     const onExpired = () => {
       setIsAdmin(false);
@@ -342,7 +374,6 @@ export default function App() {
     try {
       const data = await apiLoadAll();
 
-      // Database masih kosong (pertama kali dipakai): isi data awal
       let accs = data.accounts;
       if (accs.length === 0) {
         accs = INITIAL_ACCOUNTS;
@@ -360,13 +391,12 @@ export default function App() {
       setCategories(cats);
       if (data.storeName && data.storeName.trim()) setStoreName(data.storeName.trim());
 
-      // Muat data utang-piutang (paralel, tidak blocking kalau error)
+      // Muat data utang-piutang (non-blocking)
       try {
         const loadedDebts = await apiLoadDebts();
         setDebts(loadedDebts);
       } catch (debtErr) {
         console.warn('Gagal memuat utang-piutang:', debtErr);
-        // Tidak fatal, biarkan aplikasi tetap jalan
       }
     } catch (e: any) {
       console.error(e);
@@ -387,7 +417,7 @@ export default function App() {
     return getMonthYearOptions(transactions);
   }, [transactions]);
 
-  // Statistics calculation for the active view and wallets
+  // Statistics calculation
   const stats: MonthlyStats = useMemo(() => {
     let totalMasuk = 0;
     let totalKeluar = 0;
@@ -395,7 +425,6 @@ export default function App() {
     const dailyExpenses: Record<string, number> = {};
 
     transactions.forEach(t => {
-      // Pindah saldo & pindah kategori hanya memindahkan uang, bukan pemasukan/pengeluaran sungguhan
       if (t.category === 'Pindah Saldo' || t.id.startsWith('kt-')) return;
       if (t.type === 'masuk') {
         totalMasuk += t.amount;
@@ -410,7 +439,6 @@ export default function App() {
     const sisaSaldo = totalMasuk - totalKeluar;
     const sisaPersen = totalMasuk > 0 ? (sisaSaldo / totalMasuk) * 100 : 0;
 
-    // Saldo akun: saldo awal + semua transaksi yang tercatat
     const accountBalances: Record<string, number> = {};
     accounts.forEach(acc => {
       accountBalances[acc.id] = acc.initialBalance || 0;
@@ -439,7 +467,7 @@ export default function App() {
     };
   }, [transactions, accounts]);
 
-  // Filtered transactions matching the active filters (dipakai untuk ekspor Excel)
+  // Filtered transactions
   const filteredTransactions = useMemo(() => {
     return transactions.filter(t => {
       if (filter.monthYear !== 'ALL' && !t.date.startsWith(filter.monthYear)) return false;
@@ -507,7 +535,7 @@ export default function App() {
     }
   };
 
-  // Handler: Edit / Update existing transaction (Admin)
+  // Handler: Edit transaction
   const handleEditTransaction = async (updatedTx: Transaction) => {
     try {
       await apiSaveTransaction(updatedTx);
@@ -519,7 +547,7 @@ export default function App() {
     }
   };
 
-  // Handler: Pindah Saldo / Transfer Antar Dompet
+  // Handler: Pindah Saldo
   const handleTransfer = async (
     fromAccId: string,
     toAccId: string,
@@ -570,7 +598,7 @@ export default function App() {
     }
   };
 
-  // Handler: Pindah Kategori (mis. diambil dari Toko untuk Pokok). Saldo akun tidak berubah.
+  // Handler: Pindah Kategori
   const handleTransferCategory = async (
     fromCat: string,
     toCat: string,
@@ -622,13 +650,12 @@ export default function App() {
     }
   };
 
-  // Handler: Batalkan transaksi terakhir (Undo last)
+  // Handler: Undo last
   const handleUndoLast = async () => {
     if (transactions.length === 0) return;
     const lastTx = transactions[0];
 
     const idsToRemove = [lastTx.id];
-    // Pindah kategori terdiri dari dua baris yang saling terhubung
     if (lastTx.id.startsWith('kt-') && lastTx.linkedTransactionId) {
       idsToRemove.push(lastTx.linkedTransactionId);
     }
@@ -716,7 +743,7 @@ export default function App() {
         </div>
       )}
 
-            {/* Main Content View */}
+      {/* Main Content View */}
       <main className="flex-1 w-full max-w-md sm:max-w-lg md:max-w-xl mx-auto px-3 sm:px-4 py-5 sm:py-8">
         {mainView === 'dompet' && (
           <DompetTokoView
@@ -797,10 +824,7 @@ export default function App() {
         </div>
       </div>
 
-      
-
       {/* MODALS */}
-      {/* 1. Auto Record Modal (AI: teks & foto struk) */}
       <AutoRecordModal
         isOpen={isAutoRecordOpen}
         onClose={() => setIsAutoRecordOpen(false)}
@@ -809,7 +833,6 @@ export default function App() {
         categories={categories}
       />
 
-      {/* 2. Neon PostgreSQL & Vercel Deploy Modal */}
       <NeonVercelModal
         isOpen={isNeonModalOpen}
         onClose={() => setIsNeonModalOpen(false)}
@@ -828,7 +851,6 @@ export default function App() {
         }}
       />
 
-      {/* 3. Export / Import Modal */}
       <ExportImportModal
         isOpen={isExportImportOpen}
         onClose={() => setIsExportImportOpen(false)}
@@ -847,7 +869,6 @@ export default function App() {
         }}
       />
 
-      {/* 4. Admin PIN & Access Modal */}
       <AdminPinModal
         isOpen={isAdminModalOpen}
         onClose={() => setIsAdminModalOpen(false)}
