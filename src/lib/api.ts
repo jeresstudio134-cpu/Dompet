@@ -388,12 +388,44 @@ export const apiAiParse = async (payload: {
   imageBase64?: string;
   mimeType?: string;
 }): Promise<AiParsedItem[]> => {
-  const json = await safeRequest(API_URL, {
-    method: 'POST',
-    body: JSON.stringify({ entity: 'ai_parse', ...payload }),
-  });
-  if (!json || !json.transactions) {
-    throw new Error('Fitur AI server sedang tidak aktif.');
+  const token = getAdminToken();
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 60000);
+
+  try {
+    const res = await fetch(API_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { 'x-admin-token': token } : {}),
+      },
+      body: JSON.stringify({ entity: 'ai_parse', ...payload }),
+      signal: controller.signal,
+    });
+    clearTimeout(timer);
+
+    const contentType = res.headers.get('content-type') || '';
+    if (!contentType.includes('application/json')) {
+      throw new Error(
+        'Server backend belum siap. Pastikan Vercel deployment sudah selesai (Redeploy) dan database Neon terhubung.'
+      );
+    }
+
+    const json = await res.json();
+    if (!res.ok || !json.success) {
+      throw new Error(json.error || `Server AI error (${res.status}).`);
+    }
+
+    if (!Array.isArray(json.transactions)) {
+      throw new Error('AI tidak menemukan data transaksi.');
+    }
+
+    return json.transactions as AiParsedItem[];
+  } catch (err: any) {
+    clearTimeout(timer);
+    if (err.name === 'AbortError') {
+      throw new Error('Waktu pemrosesan AI habis (>60 detik). Coba gunakan foto yang lebih terang atau ketik di tab teks.');
+    }
+    throw err;
   }
-  return (json.transactions || []) as AiParsedItem[];
 };

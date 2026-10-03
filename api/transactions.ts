@@ -267,10 +267,8 @@ export default async function handler(req: any, res: any) {
     if (req.method === 'POST' || req.method === 'PUT') {
       const body = req.body || {};
 
-      // Pencatatan otomatis dengan Gemini (hanya admin)
+      // Pencatatan otomatis dengan Gemini (bisa digunakan baik mode Kasir maupun Admin)
       if (body.entity === 'ai_parse') {
-        if (!isAdminReq) return denyAdmin();
-
         const apiKey = (process.env.GEMINI_API_KEY || '').trim();
         if (!apiKey) {
           return res.status(500).json({

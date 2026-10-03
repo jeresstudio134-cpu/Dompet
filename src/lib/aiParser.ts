@@ -1,7 +1,7 @@
 import { apiAiParse, AiParsedItem } from './api.ts';
 import { ParsedTransactionResult } from './autoParser.ts';
 
-const MAX_SIDE = 1600;
+const MAX_SIDE = 1200;
 
 // Kecilkan foto agar muat di batas upload server dan lebih cepat diproses AI
 export const compressImage = (
@@ -25,7 +25,7 @@ export const compressImage = (
       }
 
       ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-      const dataUrl = canvas.toDataURL('image/jpeg', 0.82);
+      const dataUrl = canvas.toDataURL('image/jpeg', 0.80);
       URL.revokeObjectURL(url);
       resolve({ base64: dataUrl.split(',')[1], mimeType: 'image/jpeg', preview: dataUrl });
     };
