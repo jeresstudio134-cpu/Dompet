@@ -327,9 +327,40 @@ export default async function handler(req: any, res: any) {
           },
         };
 
+        // Deteksi model yang benar-benar aktif & didukung di akun Google AI Studio pengguna
+        let activeModels: string[] = [];
+        try {
+          const mRes = await fetch(
+            `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(apiKey)}`
+          );
+          if (mRes.ok) {
+            const mData = await mRes.json();
+            activeModels = (mData.models || [])
+              .filter((m: any) => m.supportedGenerationMethods?.includes('generateContent'))
+              .map((m: any) => String(m.name || '').replace(/^models\//, ''));
+          }
+        } catch (e) {
+          console.error('List models failed:', e);
+        }
+
+        const preferredList = [
+          process.env.GEMINI_MODEL?.trim(),
+          'gemini-2.5-flash',
+          'gemini-3.5-flash',
+          'gemini-3.1-flash-lite',
+          'gemini-3.8-flash',
+          'gemini-flash-latest',
+        ].filter(Boolean) as string[];
+
+        // Urutkan model: model yang terbukti ada di akun -> model flash aktif lainnya -> daftar cadangan
         const candidateModels = Array.from(
-          new Set([process.env.GEMINI_MODEL?.trim() || 'gemini-2.5-flash', 'gemini-3.8-flash', 'gemini-1.5-flash'])
-        );
+          new Set([
+            ...preferredList.filter(m => activeModels.length === 0 || activeModels.includes(m)),
+            ...activeModels.filter(m => m.includes('flash')),
+            ...activeModels,
+            ...preferredList,
+          ])
+        ).filter(m => m && !m.includes('1.5') && !m.includes('2.0')); // Hindari model 1.5 dan 2.0 yang sudah ditutup Google
 
         let raw = '';
         let lastErrorMsg = '';
