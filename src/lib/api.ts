@@ -438,7 +438,6 @@ export const apiAiParse = async (payload: {
 const DEBTS_API_URL = '/api/debts';
 const LOCAL_DEBTS_KEY = 'dompet_pintar_debts';
 
-// Helper LocalStorage untuk fallback offline
 function getLocalDebts(): Debt[] {
   try {
     const stored = localStorage.getItem(LOCAL_DEBTS_KEY);
@@ -460,7 +459,6 @@ function saveLocalDebts(debts: Debt[]) {
   }
 }
 
-// Muat semua utang-piutang (server first, fallback lokal)
 export const apiLoadDebts = async (): Promise<Debt[]> => {
   const localDebts = getLocalDebts();
 
@@ -468,7 +466,6 @@ export const apiLoadDebts = async (): Promise<Debt[]> => {
     const json = await safeRequest(DEBTS_API_URL);
     if (json && json.success && Array.isArray(json.debts)) {
       const serverDebts = json.debts as Debt[];
-      // Simpan salinan lokal agar cepat & offline-ready
       saveLocalDebts(serverDebts);
       return serverDebts;
     }
@@ -479,9 +476,7 @@ export const apiLoadDebts = async (): Promise<Debt[]> => {
   return localDebts;
 };
 
-// Simpan (create/update) utang-piutang
 export const apiSaveDebt = async (debt: Debt): Promise<void> => {
-  // Update localStorage dulu (optimistic)
   const current = getLocalDebts();
   const exists = current.some(d => d.id === debt.id);
   const updated = exists
@@ -489,7 +484,6 @@ export const apiSaveDebt = async (debt: Debt): Promise<void> => {
     : [debt, ...current];
   saveLocalDebts(updated);
 
-  // Kirim ke server (kalau gagal, data tetap aman di local)
   try {
     await safeRequest(DEBTS_API_URL, {
       method: 'POST',
@@ -500,7 +494,6 @@ export const apiSaveDebt = async (debt: Debt): Promise<void> => {
   }
 };
 
-// Hapus utang-piutang
 export const apiDeleteDebt = async (id: string): Promise<void> => {
   const current = getLocalDebts();
   saveLocalDebts(current.filter(d => d.id !== id));
@@ -515,9 +508,7 @@ export const apiDeleteDebt = async (id: string): Promise<void> => {
   }
 };
 
-// Simpan pembayaran/angsuran
 export const apiSaveDebtPayment = async (payment: DebtPayment): Promise<void> => {
-  // Update lokal dulu
   const current = getLocalDebts();
   const updated = current.map(d => {
     if (d.id !== payment.debtId) return d;
@@ -540,7 +531,6 @@ export const apiSaveDebtPayment = async (payment: DebtPayment): Promise<void> =>
   }
 };
 
-// Hapus pembayaran
 export const apiDeleteDebtPayment = async (paymentId: string): Promise<void> => {
   const current = getLocalDebts();
   const updated = current.map(d => ({
