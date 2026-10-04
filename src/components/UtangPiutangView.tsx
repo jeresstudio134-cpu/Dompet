@@ -356,14 +356,10 @@ export const UtangPiutangView: React.FC<UtangPiutangViewProps> = ({
                         </div>
                       )}
                       {debt.notes && (
-                        <details className="mt-1 bg-slate-50 border border-slate-200 rounded-md px-2 py-1 text-[11px]">
-                          <summary className="cursor-pointer text-slate-500 font-medium select-none">
-                            📝 Lihat catatan
-                          </summary>
-                          <div className="mt-1 text-slate-600 italic leading-snug break-words">
-                            {debt.notes}
-                          </div>
-                        </details>
+                        <div className="text-[11px] text-slate-500 mt-1 bg-slate-50 border border-slate-200 rounded-md px-2 py-1 leading-snug break-words">
+                          <span className="font-medium text-slate-400 mr-1">📝</span>
+                          <span className="italic">{debt.notes}</span>
+                        </div>
                       )}
                     </div>
                     {isAdmin && (
