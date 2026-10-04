@@ -1,5 +1,5 @@
 {
-  "name": "Dompet Pintar - Catat Keuangan Otomatis & Pelacak Pengeluaran",
+  "name": "JERES STUDIO - Dompet Keuangan",
   "description": "Aplikasi pencatatan keuangan pribadi & toko otomatis.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
