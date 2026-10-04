@@ -360,6 +360,7 @@ export const UtangPiutangView: React.FC<UtangPiutangViewProps> = ({
                           Catatan: <span className="font-medium text-slate-700">{debt.notes}</span>
                         </div>
                       )}
+                      </div>
                     {isAdmin && (
                       <div className="flex items-center gap-0.5 shrink-0">
                         <button
