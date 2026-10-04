@@ -355,6 +355,16 @@ export const UtangPiutangView: React.FC<UtangPiutangViewProps> = ({
                           Kepada: <span className="font-medium text-slate-700">{debt.counterparty}</span>
                         </div>
                       )}
+                      {debt.notes && (
+                        <details className="mt-1 bg-slate-50 border border-slate-200 rounded-md px-2 py-1 text-[11px]">
+                          <summary className="cursor-pointer text-slate-500 font-medium select-none">
+                            📝 Lihat catatan
+                          </summary>
+                          <div className="mt-1 text-slate-600 italic leading-snug break-words">
+                            {debt.notes}
+                          </div>
+                        </details>
+                      )}
                     </div>
                     {isAdmin && (
                       <div className="flex items-center gap-0.5 shrink-0">
