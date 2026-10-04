@@ -61,6 +61,22 @@ async function ensureTables(sql: any) {
   }
 }
 
+// Normalisasi tanggal: handle DATE, TIMESTAMP, TEXT, ISO string
+function toDateStr(val: any): string | undefined {
+  if (!val && val !== 0) return undefined;
+  if (typeof val === 'string') {
+    // Sudah YYYY-MM-DD
+    if (/^\d{4}-\d{2}-\d{2}$/.test(val)) return val;
+    // ISO string (mis. "2026-10-03T00:00:00.000Z")
+    const m = val.match(/^(\d{4}-\d{2}-\d{2})/);
+    return m ? m[1] : undefined;
+  }
+  if (val instanceof Date) {
+    return val.toISOString().split('T')[0];
+  }
+  return undefined;
+}
+
 export default async function handler(req: any, res: any) {
   const databaseUrl = process.env.DATABASE_URL || process.env.NEON_DATABASE_URL;
   if (!databaseUrl) {
@@ -83,8 +99,8 @@ export default async function handler(req: any, res: any) {
         sql`
           SELECT 
             id, type, name, counterparty, total_amount as "totalAmount",
-            to_char(start_date, 'YYYY-MM-DD') as "startDate",
-            to_char(due_date, 'YYYY-MM-DD') as "dueDate",
+            start_date as "startDate",
+            due_date as "dueDate",
             installment_amount as "installmentAmount",
             installment_period as "installmentPeriod",
             notes, created_at as "createdAt"
@@ -94,7 +110,7 @@ export default async function handler(req: any, res: any) {
         sql`
           SELECT 
             id, debt_id as "debtId",
-            to_char(date, 'YYYY-MM-DD') as date,
+            date,
             amount, account_id as "accountId", notes
           FROM debt_payments
           ORDER BY date DESC
@@ -107,8 +123,8 @@ export default async function handler(req: any, res: any) {
         name: d.name,
         counterparty: d.counterparty || '',
         totalAmount: Number(d.totalAmount) || 0,
-        startDate: d.startDate,
-        dueDate: d.dueDate || undefined,
+        startDate: toDateStr(d.startDate) || d.startDate,
+        dueDate: toDateStr(d.dueDate) || undefined,
         installmentAmount: d.installmentAmount ? Number(d.installmentAmount) : undefined,
         installmentPeriod: d.installmentPeriod ? Number(d.installmentPeriod) : undefined,
         notes: d.notes || undefined,
@@ -118,7 +134,7 @@ export default async function handler(req: any, res: any) {
           .map((p: any) => ({
             id: p.id,
             debtId: p.debtId,
-            date: p.date,
+            date: toDateStr(p.date) || p.date,
             amount: Number(p.amount) || 0,
             accountId: p.accountId || undefined,
             notes: p.notes || undefined,
@@ -142,6 +158,8 @@ export default async function handler(req: any, res: any) {
 
       if (action === 'saveDebt') {
         const d = payload;
+        const startDate = toDateStr(d.startDate);
+        const dueDate = toDateStr(d.dueDate);
         await sql`
           INSERT INTO debts (
             id, type, name, counterparty, total_amount, start_date,
@@ -149,8 +167,8 @@ export default async function handler(req: any, res: any) {
           )
           VALUES (
             ${d.id}, ${d.type}, ${d.name}, ${d.counterparty || null},
-            ${Number(d.totalAmount) || 0}, ${d.startDate},
-            ${d.dueDate || null}, ${d.installmentAmount || null},
+            ${Number(d.totalAmount) || 0}, ${startDate || null},
+            ${dueDate || null}, ${d.installmentAmount || null},
             ${d.installmentPeriod || null}, ${d.notes || null},
             ${d.createdAt ? new Date(d.createdAt).toISOString() : new Date().toISOString()}
           )
@@ -175,10 +193,11 @@ export default async function handler(req: any, res: any) {
 
       if (action === 'savePayment') {
         const p = payload;
+        const payDate = toDateStr(p.date);
         await sql`
           INSERT INTO debt_payments (id, debt_id, date, amount, account_id, notes)
           VALUES (
-            ${p.id}, ${p.debtId}, ${p.date}, ${Number(p.amount) || 0},
+            ${p.id}, ${p.debtId}, ${payDate || null}, ${Number(p.amount) || 0},
             ${p.accountId || null}, ${p.notes || null}
           )
           ON CONFLICT (id) DO UPDATE SET
