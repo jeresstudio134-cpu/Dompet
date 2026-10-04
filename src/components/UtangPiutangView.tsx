@@ -356,12 +356,10 @@ export const UtangPiutangView: React.FC<UtangPiutangViewProps> = ({
                         </div>
                       )}
                       {debt.notes && (
-                        <div className="text-[11px] text-slate-500 mt-1 bg-slate-50 border border-slate-200 rounded-md px-2 py-1 leading-snug break-words">
-                          <span className="font-medium text-slate-400 mr-1">📝</span>
-                          <span className="italic">{debt.notes}</span>
+                        <div className="text-[11px] text-slate-500 mt-0.5">
+                          Catatan: <span className="font-medium text-slate-700">{debt.notes}</span>
                         </div>
                       )}
-                    </div>
                     {isAdmin && (
                       <div className="flex items-center gap-0.5 shrink-0">
                         <button
